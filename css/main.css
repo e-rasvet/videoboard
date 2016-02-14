@@ -1,0 +1,14 @@
+.vs-like-dis{
+  opacity:0.4
+}
+
+.vs-like-dis:hover{
+  opacity:1
+}
+
+.vs-like-grade{
+  padding: 6px;
+  border: 1px solid #888889;
+  background-color: #eaf1dd;
+  margin: 6px;
+}
