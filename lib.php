@@ -1,9 +1,9 @@
-<?php  // $Id: lib.php,v 1.2 2012/03/10 22:00:00 Igor Nikulin Exp $
+<?php // $Id: lib.php,v 1.2 2012/03/10 22:00:00 Igor Nikulin Exp $
 
 define('VIDEOBOARD_VIDEOTYPES', json_encode(array("video/quicktime", "video/mp4", "video/3gp", "video/3gpp", "video/x-ms-wmv")));
 define('VIDEOBOARD_AUDIOTYPES', json_encode(array("audio/x-wav", "audio/mpeg", "audio/wav", "audio/mp4a", "audio/mp4", "audio/mp3", "audio/3gpp")));
-    
-    
+
+
 //define('FILTER_ALL', 0);
 //define('FILTER_SUBMITTED', 1);
 //define('FILTER_REQUIRE_GRADING', 2);
@@ -14,40 +14,43 @@ define('VIDEOBOARD_AUDIOTYPES', json_encode(array("audio/x-wav", "audio/mpeg", "
 define('VIDEOBOARD_COUNT_WORDS', 1);
 define('VIDEOBOARD_COUNT_LETTERS', 2);
 
-function videoboard_add_instance($videoboard) {
+function videoboard_add_instance($videoboard)
+{
     global $USER, $DB;
 
-    $videoboard->timemodified    = time();
+    $videoboard->timemodified = time();
     $videoboard->teacher = $USER->id;
-    $videoboard->id      = $DB->insert_record('videoboard', $videoboard);
-    
+    $videoboard->id = $DB->insert_record('videoboard', $videoboard);
+
     videoboard_grade_item_update($videoboard);
-    
+
     return $videoboard->id;
 }
 
-function videoboard_update_instance($videoboard) {
+function videoboard_update_instance($videoboard)
+{
     global $DB;
 
     $videoboard->timemodified = time();
-    $videoboard->id   = $videoboard->instance;
-    
+    $videoboard->id = $videoboard->instance;
+
     videoboard_grade_item_update($videoboard);
 
     return $DB->update_record('videoboard', $videoboard);
 }
 
 
-function videoboard_delete_instance($id) {
+function videoboard_delete_instance($id)
+{
     global $DB;
-    
-    if (! $videoboard = $DB->get_record('videoboard', array('id' => $id))) {
+
+    if (!$videoboard = $DB->get_record('videoboard', array('id' => $id))) {
         return false;
     }
 
     $result = true;
 
-    if (! $DB->delete_records('videoboard', array('id' => $videoboard->id))) {
+    if (!$DB->delete_records('videoboard', array('id' => $videoboard->id))) {
         $result = false;
     }
 
@@ -55,337 +58,399 @@ function videoboard_delete_instance($id) {
 }
 
 
-function videoboard_cron () {
+function videoboard_cron()
+{
     global $DB, $CFG;
-    
-    
-    if ($data = $DB->get_record_sql("SELECT * FROM {videoboard_process} WHERE `status`='open' LIMIT 1")){
-      $CFG->videoboard_convert = 0;
-      
-      if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) 
-        $CFG->videoboard_convert = $CFG->videoboard_video_convert;
-      else if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES)))
-        $CFG->videoboard_convert = $CFG->videoboard_audio_convert;
-        
+
+    $arrContextOptions=array(
+        "ssl"=>array(
+            "verify_peer"=>false,
+            "verify_peer_name"=>false,
+        ),
+    );
+
+
+    if ($data = $DB->get_record_sql("SELECT * FROM {videoboard_process} WHERE `status`='open' LIMIT 1")) {
+        $CFG->videoboard_convert = 0;
+
+        if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES)))
+            $CFG->videoboard_convert = $CFG->videoboard_video_convert;
+        else if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES)))
+            $CFG->videoboard_convert = $CFG->videoboard_audio_convert;
+
 //Check converting method local or mserver
-      if ($CFG->videoboard_convert == 1) 
-          if (strstr($CFG->videoboard_convert_url, "ffmpeg"))
-              $CFG->videoboard_convert = 2;  //local
-      
-      
+        if ($CFG->videoboard_convert == 1)
+            if (strstr($CFG->videoboard_convert_url, "ffmpeg"))
+                $CFG->videoboard_convert = 2;  //local
 
-      if ($CFG->videoboard_convert == 1) {
-          $from    = videoboard_getfileid($data->itemid);
-          
-          $add         = new stdClass;
-          $add->id     = $data->id;
-          $add->status = 'send';
-          
-          $DB->update_record("videoboard_process", $add);
-          
-          
-          $ch = curl_init();
 
-          if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES))) 
-            $datasend = array('name' => $data->name, 'mconverter_wav' => '@'.$from->fullpatch);
-          if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) 
-            $datasend = array('name' => $data->name, 'mconverter_m4a' => '@'.$from->fullpatch);
-          
-          curl_setopt($ch, CURLOPT_URL, $CFG->videoboard_convert_url.'/send.php');
-          curl_setopt($ch, CURLOPT_POST, 1);
-          curl_setopt($ch, CURLOPT_POSTFIELDS, $datasend);
-          curl_exec($ch);
-      } else if ($CFG->videoboard_convert == 3){
-          $from        = videoboard_getfileid($data->itemid);
-          
-          $add         = new stdClass;
-          $add->id     = $data->id;
-          $add->status = 'send';
-          
-          $DB->update_record("videoboard_process", $add);
-
-          if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) {
-            if ($item = $DB->get_record("videoboard_files", array("itemoldid" => $data->itemid))) 
-              $table = 'videoboard_files';
-            else if ($item = $DB->get_record("videoboard_comments", array("itemoldid" => $data->itemid))) 
-              $table = 'videoboard_comments';
-          
-            @set_include_path($CFG->dirroot.'/mod/videoboard/library');
-            
-            require_once("Zend/Gdata/ClientLogin.php");
-            require_once("Zend/Gdata/HttpClient.php");
-            require_once("Zend/Gdata/YouTube.php");
-            require_once("Zend/Gdata/App/HttpException.php");
-            require_once('Zend/Uri/Http.php');
-            
-            $authenticationURL= 'https://www.google.com/youtube/accounts/ClientLogin';
-            $httpClient = Zend_Gdata_ClientLogin::getHttpClient(
-                                                      $username = $CFG->videoboard_youtube_email,
-                                                      $password = $CFG->videoboard_youtube_password,
-                                                      $service = 'youtube',
-                                                      $client = null,
-                                                      $source = 'VideoBoard',
-                                                      $loginToken = null,
-                                                      $loginCaptcha = null,
-                                                      $authenticationURL);
-                                                      
-            $yt = new Zend_Gdata_YouTube($httpClient, 'VideoBoard', NULL, $CFG->videoboard_youtube_apikey);
-            
-            $myVideoEntry = new Zend_Gdata_YouTube_VideoEntry();
-            
-/// unlisted upload
-            $accessControlElement = new Zend_Gdata_App_Extension_Element(
-                'yt:accessControl', 'yt', 'http://gdata.youtube.com/schemas/2007', ''
-            );
-            $accessControlElement->extensionAttributes = array(
-                array(
-              'namespaceUri' => '',
-              'name' => 'action',
-              'value' => 'list'
-                ),
-                array(
-              'namespaceUri' => '',
-              'name' => 'permission',
-              'value' => 'denied'
-              ));
-         
-            $myVideoEntry->extensionElements = array($accessControlElement);
-            
-            $filesource = $yt->newMediaFileSource($from->fullpatch);
-            $filesource->setContentType($data->type);
-            $filesource->setSlug('slug');
-            $myVideoEntry->setMediaSource($filesource);
-            
-            $myVideoEntry->setVideoTitle($from->author);
-            $myVideoEntry->setVideoDescription($from->author);
-            $myVideoEntry->setVideoCategory('Education');
-            $myVideoEntry->SetVideoTags('videoboard');
-            //$myVideoEntry->setVideoDeveloperTags(array($item->id));
-
-            //$yt->registerPackage('Zend_Gdata_Geo');
-            //$yt->registerPackage('Zend_Gdata_Geo_Extension');
-            //$where = $yt->newGeoRssWhere();
-            //$position = $yt->newGmlPos('37.0 -122.0');
-            //$where->point = $yt->newGmlPoint($position);
-            //$myVideoEntry->setWhere($where);
-
-            $uploadUrl = 'http://uploads.gdata.youtube.com/feeds/api/users/default/uploads';
-
-            try {
-              $newEntry = $yt->insertEntry($myVideoEntry, $uploadUrl, 'Zend_Gdata_YouTube_VideoEntry');
-            } catch (Zend_Gdata_App_HttpException $httpException) {
-              echo $httpException->getRawResponseBody();
-              
-              $DB->delete_records('videoboard_process', array('id' => $data->id));
-            } catch (Zend_Gdata_App_Exception $e) {
-              echo $e->getMessage();
-              
-              $DB->delete_records('videoboard_process', array('id' => $data->id));
-            }
-            
-            $itemidyoutube = $newEntry->getVideoId();
-
-            if (!empty($itemidyoutube)) 
-              $DB->set_field($table, "itemyoutube", $itemidyoutube, array("id" => $item->id));
-            
-            $DB->delete_records('videoboard_process', array('id' => $data->id));
-          } else {
-            $DB->delete_records('videoboard_process', array('id' => $data->id));
-          }
-      } else if ($CFG->videoboard_convert == 2){
-      
-///Old method
-          $DB->delete_records('videoboard_process', array('id' => $data->id));
-        
-          if (!$item = $DB->get_record("videoboard_files", array("itemoldid" => $data->itemid))) {
-            $item = $DB->get_record("videoboard_comments", array("itemoldid" => $data->itemid));
-            $table = 'videoboard_comments';
-          } else
-            $table = 'videoboard_files';
-            
-          $student = $DB->get_record("user", array("id" => $item->userid));
-          
-          $context = get_context_instance(CONTEXT_MODULE, $item->instance);
-          
-          $fs = get_file_storage();
-          
-          $file_record = new stdClass;
-          $file_record->component = 'mod_videoboard';
-          $file_record->contextid = $context->id;
-          $file_record->userid    = $item->userid;
-          $file_record->filearea  = 'private';
-          $file_record->filepath  = "/";
-          $file_record->itemid    = $item->id;
-          $file_record->license   = $CFG->sitedefaultlicense;
-          $file_record->author    = fullname($student);
-          $file_record->source    = '';
-          
-          if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) {
-            $from    = videoboard_getfileid($data->itemid);
-            $to      = $CFG->dataroot."/temp/".$item->filename.".mp4";
-            $toimg   = $CFG->dataroot."/temp/".$item->filename.".jpg";
-            
-            videoboard_runExternal("/opt/handbrake/HandBrakeCLI -Z Universal -i {$from->fullpatch} -o {$to} -w 432 -l 320", $code); 
-            videoboard_runExternal("{$CFG->videoboard_convert_url} -i {$to} -f image2 -s 432x320 {$toimg}", $code); 
-            
-            $file_record->filename  = $item->filename.".mp4";
-            $itemid = $fs->create_file_from_pathname($file_record, $to);
-            
-            $file_record->filename  = $item->filename.".jpg";
-            $itemimgid = $fs->create_file_from_pathname($file_record, $toimg);
-            
-            $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
-            $DB->set_field($table, "itemimgid", $itemimgid->get_id(), array("id" => $item->id));
-            
-            unlink($to);
-            unlink($toimg);
-          } else if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES))) {
+        if ($CFG->videoboard_convert == 1) {
             $from = videoboard_getfileid($data->itemid);
-            $to   = $CFG->dataroot."/temp/".$item->filename.".mp3";
-            
-            videoboard_runExternal("{$CFG->videoboard_convert_url} -y -i {$from->fullpatch} -acodec libmp3lame -ab 68k -ar 44100 {$to}", $code); 
-            
-            $file_record->filename  = $item->filename.".mp3";
-            $itemid = $fs->create_file_from_pathname($file_record, $to);
-            
-            $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
-            
-            unlink($to);
-          }
-      }
-    }
-  
-  
-///Check convert server file ready
-    if ($dataall = $DB->get_records_sql("SELECT * FROM {videoboard_process} WHERE `status` = 'send'")){
-        foreach($dataall as $data){
-          if (!$item = $DB->get_record("videoboard_files", array("itemoldid" => $data->itemid))) {
-            if (!$item = $DB->get_record("videoboard_comments", array("itemoldid" => $data->itemid))) {
-              if ($videoboard = $DB->get_record("videoboard", array("fileid" => $data->itemid))){
-                $module   = $DB->get_record("modules", array("name" => "videoboard"));
-                $instance = $DB->get_record("course_modules", array("module" => $module->id, "instance" => $videoboard->id));
-              
-                $item           = new stdClass;
-                $item->userid   = $videoboard->teacher;
-                $item->instance = $instance->id;
-                $item->id       = $videoboard->id;
-                $item->filename = "videoboard_".$videoboard->id;
-                
-                $table = 'videoboard';
-              } else {
-                $DB->delete_records('videoboard_process', array('id' => $data->id));
-                
-                return true;
-              }
-            } else {
-              $table = 'videoboard_comments';
-            }
-          } else {
-            $table = 'videoboard_files';
-          }
-            
-          $student = $DB->get_record("user", array("id" => $item->userid));
-          
-          $context = get_context_instance(CONTEXT_MODULE, $item->instance);
-          
-          $fs = get_file_storage();
-          
-          $file_record = new stdClass;
-          $file_record->component = 'mod_videoboard';
-          $file_record->contextid = $context->id;
-          $file_record->userid    = $item->userid;
-          $file_record->filearea  = 'private';
-          $file_record->filepath  = "/";
-          $file_record->itemid    = $item->id;
-          $file_record->license   = $CFG->sitedefaultlicense;
-          $file_record->author    = fullname($student);
-          $file_record->source    = '';
-          
-          if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES)) && $CFG->videoboard_video_convert == 1) {
-            $json = json_decode(file_get_contents($CFG->videoboard_convert_url."/get.php?name={$data->name}.mp4"));
-            $jsonimg = json_decode(file_get_contents($CFG->videoboard_convert_url."/get.php?name={$data->name}.jpg"));
-          } else if ($CFG->videoboard_audio_convert == 1)
-            $json = json_decode(file_get_contents($CFG->videoboard_convert_url."/get.php?name={$data->name}.mp3"));
 
-          if (@!empty($json->url)){
-            $DB->delete_records('videoboard_process', array('id' => $data->id));
-            
+            $add = new stdClass;
+            $add->id = $data->id;
+            $add->status = 'send';
+
+            $DB->update_record("videoboard_process", $add);
+
+define('MULTIPART_BOUNDARY', '--------------------------'.microtime(true));
+$header = 'Content-Type: multipart/form-data; boundary='.MULTIPART_BOUNDARY;
+
+            if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES)))
+                define('FORM_FIELD', 'mconverter_wav');
+            if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES)))
+                define('FORM_FIELD', 'mconverter_m4a');
+
+$filename = $from->fullpatch;
+$file_contents = file_get_contents($filename);
+
+$content =  "--".MULTIPART_BOUNDARY."\r\n".
+            "Content-Disposition: form-data; name=\"".FORM_FIELD."\"; filename=\"".basename($filename)."\"\r\n".
+            "Content-Type: application/zip\r\n\r\n".
+            $file_contents."\r\n";
+
+// add some POST fields to the request too: $_POST['foo'] = 'bar'
+$content .= "--".MULTIPART_BOUNDARY."\r\n".
+            "Content-Disposition: form-data; name=\"name\"\r\n\r\n".
+            "{$data->name}\r\n";
+
+// signal end of request (note the trailing "--")
+$content .= "--".MULTIPART_BOUNDARY."--\r\n";
+
+$context = stream_context_create(array(
+    'http' => array(
+          'method' => 'POST',
+          'header' => $header,
+          'content' => $content,
+    ),
+    "ssl"=>array(
+        "verify_peer"=>false,
+        "verify_peer_name"=>false,
+    ),
+));
+
+file_get_contents($CFG->videoboard_convert_url . '/send.php', false, $context);
+            /*
+            $ch = curl_init();
+
+            if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES)))
+                $datasend = array('name' => $data->name, 'mconverter_wav' => '@' . $from->fullpatch);
+            if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES)))
+                $datasend = array('name' => $data->name, 'mconverter_m4a' => '@' . $from->fullpatch);
+
+            curl_setopt($ch, CURLOPT_URL, $CFG->videoboard_convert_url . '/send.php');
+            curl_setopt($ch, CURLOPT_POST, 1);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $datasend);
+            curl_exec($ch);
+            */
+        } else if ($CFG->videoboard_convert == 3) {
+        /*
+            $from = videoboard_getfileid($data->itemid);
+
+            $add = new stdClass;
+            $add->id = $data->id;
+            $add->status = 'send';
+
+            $DB->update_record("videoboard_process", $add);
+
             if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) {
-              $to   = $CFG->dataroot."/temp/".$item->filename.".mp4";
-              file_put_contents($to, file_get_contents($json->url));
-            
-              $file_record->filename  = $item->filename.".mp4";
+                if ($item = $DB->get_record("videoboard_files", array("itemoldid" => $data->itemid)))
+                    $table = 'videoboard_files';
+                else if ($item = $DB->get_record("videoboard_comments", array("itemoldid" => $data->itemid)))
+                    $table = 'videoboard_comments';
 
-              $itemid = $fs->create_file_from_pathname($file_record, $to);
-              
-              $file = videoboard_getfileid($itemid->get_id());
-              @chmod($file->fullpatch, 0755);
-            
-              $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
-              
-              
-              $toimg   = $CFG->dataroot."/temp/".$item->filename.".jpg";
-              file_put_contents($toimg, file_get_contents($jsonimg->url));
-              $file_record->filename  = $item->filename.".jpg";
-              $itemid = $fs->create_file_from_pathname($file_record, $toimg);
-              
-              $file = videoboard_getfileid($itemid->get_id());
-              @chmod($file->fullpatch, 0755);
-              
-              $DB->set_field($table, "itemimgid", $itemid->get_id(), array("id" => $item->id));
+                @set_include_path($CFG->dirroot . '/mod/videoboard/library');
+
+                require_once("Zend/Gdata/ClientLogin.php");
+                require_once("Zend/Gdata/HttpClient.php");
+                require_once("Zend/Gdata/YouTube.php");
+                require_once("Zend/Gdata/App/HttpException.php");
+                require_once('Zend/Uri/Http.php');
+
+                $authenticationURL = 'https://www.google.com/youtube/accounts/ClientLogin';
+                $httpClient = Zend_Gdata_ClientLogin::getHttpClient(
+                    $username = $CFG->videoboard_youtube_email,
+                    $password = $CFG->videoboard_youtube_password,
+                    $service = 'youtube',
+                    $client = null,
+                    $source = 'VideoBoard',
+                    $loginToken = null,
+                    $loginCaptcha = null,
+                    $authenticationURL);
+
+                $yt = new Zend_Gdata_YouTube($httpClient, 'VideoBoard', NULL, $CFG->videoboard_youtube_apikey);
+
+                print_r ($yt);
+
+                $myVideoEntry = new Zend_Gdata_YouTube_VideoEntry();
+
+/// unlisted upload
+                $accessControlElement = new Zend_Gdata_App_Extension_Element(
+                    'yt:accessControl', 'yt', 'http://gdata.youtube.com/schemas/2007', ''
+                );
+                $accessControlElement->extensionAttributes = array(
+                    array(
+                        'namespaceUri' => '',
+                        'name' => 'action',
+                        'value' => 'list'
+                    ),
+                    array(
+                        'namespaceUri' => '',
+                        'name' => 'permission',
+                        'value' => 'denied'
+                    ));
+
+                $myVideoEntry->extensionElements = array($accessControlElement);
+
+                $filesource = $yt->newMediaFileSource($from->fullpatch);
+                $filesource->setContentType($data->type);
+                $filesource->setSlug('slug');
+                $myVideoEntry->setMediaSource($filesource);
+
+                $myVideoEntry->setVideoTitle($from->author);
+                $myVideoEntry->setVideoDescription($from->author);
+                $myVideoEntry->setVideoCategory('Education');
+                $myVideoEntry->SetVideoTags('videoboard');
+                //$myVideoEntry->setVideoDeveloperTags(array($item->id));
+
+                //$yt->registerPackage('Zend_Gdata_Geo');
+                //$yt->registerPackage('Zend_Gdata_Geo_Extension');
+                //$where = $yt->newGeoRssWhere();
+                //$position = $yt->newGmlPos('37.0 -122.0');
+                //$where->point = $yt->newGmlPoint($position);
+                //$myVideoEntry->setWhere($where);
+
+                $uploadUrl = 'http://uploads.gdata.youtube.com/feeds/api/users/default/uploads';
+
+                try {
+                    $newEntry = $yt->insertEntry($myVideoEntry, $uploadUrl, 'Zend_Gdata_YouTube_VideoEntry');
+                } catch (Zend_Gdata_App_HttpException $httpException) {
+                    echo $httpException->getRawResponseBody();
+
+                    $DB->delete_records('videoboard_process', array('id' => $data->id));
+                } catch (Zend_Gdata_App_Exception $e) {
+                    echo $e->getMessage();
+
+                    $DB->delete_records('videoboard_process', array('id' => $data->id));
+                }
+
+                $itemidyoutube = $newEntry->getVideoId();
+
+                if (!empty($itemidyoutube))
+                    $DB->set_field($table, "itemyoutube", $itemidyoutube, array("id" => $item->id));
+
+                $DB->delete_records('videoboard_process', array('id' => $data->id));
             } else {
-              $to   = $CFG->dataroot."/temp/".$item->filename.".mp3";
-              file_put_contents($to, file_get_contents($json->url));
-            
-              $file_record->filename  = $item->filename.".mp3";
-
-              $itemid = $fs->create_file_from_pathname($file_record, $to);
-              
-              $file = videoboard_getfileid($itemid->get_id());
-              @chmod($file->fullpatch, 0755);
-            
-              $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
+                $DB->delete_records('videoboard_process', array('id' => $data->id));
             }
-            
-            unlink($to);
-            @unlink($toimg);
-            break;
-          }
+            */
+        } else if ($CFG->videoboard_convert == 2) {
+
+///Old method
+            $DB->delete_records('videoboard_process', array('id' => $data->id));
+
+            if (!$item = $DB->get_record("videoboard_files", array("itemoldid" => $data->itemid))) {
+                $item = $DB->get_record("videoboard_comments", array("itemoldid" => $data->itemid));
+                $table = 'videoboard_comments';
+            } else
+                $table = 'videoboard_files';
+
+            $student = $DB->get_record("user", array("id" => $item->userid));
+
+            $context = context_module::instance($item->instance);
+
+            $fs = get_file_storage();
+
+            $file_record = new stdClass;
+            $file_record->component = 'mod_videoboard';
+            $file_record->contextid = $context->id;
+            $file_record->userid = $item->userid;
+            $file_record->filearea = 'private';
+            $file_record->filepath = "/";
+            $file_record->itemid = $item->id;
+            $file_record->license = $CFG->sitedefaultlicense;
+            $file_record->author = fullname($student);
+            $file_record->source = '';
+
+            if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) {
+                $from = videoboard_getfileid($data->itemid);
+                $to = $CFG->dataroot . "/temp/" . $item->filename . ".mp4";
+                $toimg = $CFG->dataroot . "/temp/" . $item->filename . ".jpg";
+
+                videoboard_runExternal("/opt/handbrake/HandBrakeCLI -Z Universal -i {$from->fullpatch} -o {$to} -w 432 -l 320", $code);
+                videoboard_runExternal("{$CFG->videoboard_convert_url} -i {$to} -f image2 -s 432x320 {$toimg}", $code);
+
+                $file_record->filename = $item->filename . ".mp4";
+                $itemid = $fs->create_file_from_pathname($file_record, $to);
+
+                $file_record->filename = $item->filename . ".jpg";
+                $itemimgid = $fs->create_file_from_pathname($file_record, $toimg);
+
+                $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
+                $DB->set_field($table, "itemimgid", $itemimgid->get_id(), array("id" => $item->id));
+
+                unlink($to);
+                unlink($toimg);
+            } else if (in_array($data->type, json_decode(VIDEOBOARD_AUDIOTYPES))) {
+                $from = videoboard_getfileid($data->itemid);
+                $to = $CFG->dataroot . "/temp/" . $item->filename . ".mp3";
+
+                videoboard_runExternal("{$CFG->videoboard_convert_url} -y -i {$from->fullpatch} -acodec libmp3lame -ab 68k -ar 44100 {$to}", $code);
+
+                $file_record->filename = $item->filename . ".mp3";
+                $itemid = $fs->create_file_from_pathname($file_record, $to);
+
+                $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
+
+                unlink($to);
+            }
         }
     }
-      
-      
+
+
+///Check convert server file ready
+    if ($dataall = $DB->get_records_sql("SELECT * FROM {videoboard_process} WHERE `status` = 'send'")) {
+        foreach ($dataall as $data) {
+            if (!$item = $DB->get_record("videoboard_files", array("itemoldid" => $data->itemid))) {
+                if (!$item = $DB->get_record("videoboard_comments", array("itemoldid" => $data->itemid))) {
+                    if ($videoboard = $DB->get_record("videoboard", array("fileid" => $data->itemid))) {
+                        $module = $DB->get_record("modules", array("name" => "videoboard"));
+                        $instance = $DB->get_record("course_modules", array("module" => $module->id, "instance" => $videoboard->id));
+
+                        $item = new stdClass;
+                        $item->userid = $videoboard->teacher;
+                        $item->instance = $instance->id;
+                        $item->id = $videoboard->id;
+                        $item->filename = "videoboard_" . $videoboard->id;
+
+                        $table = 'videoboard';
+                    } else {
+                        $DB->delete_records('videoboard_process', array('id' => $data->id));
+
+                        return true;
+                    }
+                } else {
+                    $table = 'videoboard_comments';
+                }
+            } else {
+                $table = 'videoboard_files';
+            }
+
+            $student = $DB->get_record("user", array("id" => $item->userid));
+
+            $context = context_module::instance($item->instance);
+
+            $fs = get_file_storage();
+
+            $file_record = new stdClass;
+            $file_record->component = 'mod_videoboard';
+            $file_record->contextid = $context->id;
+            $file_record->userid = $item->userid;
+            $file_record->filearea = 'private';
+            $file_record->filepath = "/";
+            $file_record->itemid = $item->id;
+            $file_record->license = $CFG->sitedefaultlicense;
+            $file_record->author = fullname($student);
+            $file_record->source = '';
+
+            if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES)) && $CFG->videoboard_video_convert == 1) {
+                $json = json_decode(file_get_contents($CFG->videoboard_convert_url . "/get.php?name={$data->name}.mp4", false, stream_context_create($arrContextOptions)));
+                $jsonimg = json_decode(file_get_contents($CFG->videoboard_convert_url . "/get.php?name={$data->name}.jpg", false, stream_context_create($arrContextOptions)));
+            } else if ($CFG->videoboard_audio_convert == 1)
+                $json = json_decode(file_get_contents($CFG->videoboard_convert_url . "/get.php?name={$data->name}.mp3", false, stream_context_create($arrContextOptions)));
+
+            if (@!empty($json->url)) {
+                $DB->delete_records('videoboard_process', array('id' => $data->id));
+
+                if (in_array($data->type, json_decode(VIDEOBOARD_VIDEOTYPES))) {
+                    $to = $CFG->dataroot . "/temp/" . $item->filename . ".mp4";
+                    file_put_contents($to, file_get_contents($json->url));
+
+                    $file_record->filename = $item->filename . ".mp4";
+
+                    $itemid = $fs->create_file_from_pathname($file_record, $to);
+
+                    $file = videoboard_getfileid($itemid->get_id());
+                    @chmod($file->fullpatch, 0755);
+
+                    $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
+
+
+                    $toimg = $CFG->dataroot . "/temp/" . $item->filename . ".jpg";
+                    file_put_contents($toimg, file_get_contents($jsonimg->url));
+                    $file_record->filename = $item->filename . ".jpg";
+                    $itemid = $fs->create_file_from_pathname($file_record, $toimg);
+
+                    $file = videoboard_getfileid($itemid->get_id());
+                    @chmod($file->fullpatch, 0755);
+
+                    $DB->set_field($table, "itemimgid", $itemid->get_id(), array("id" => $item->id));
+                } else {
+                    $to = $CFG->dataroot . "/temp/" . $item->filename . ".mp3";
+                    file_put_contents($to, file_get_contents($json->url));
+
+                    $file_record->filename = $item->filename . ".mp3";
+
+                    $itemid = $fs->create_file_from_pathname($file_record, $to);
+
+                    $file = videoboard_getfileid($itemid->get_id());
+                    @chmod($file->fullpatch, 0755);
+
+                    $DB->set_field($table, "itemid", $itemid->get_id(), array("id" => $item->id));
+                }
+
+                unlink($to);
+                @unlink($toimg);
+                break;
+            }
+        }
+    }
+
+
     return true;
 }
 
 
+function videoboard_supports($feature)
+{
+    switch ($feature) {
+        case FEATURE_GROUPS:
+            return true;
+        case FEATURE_GROUPINGS:
+            return true;
+        case FEATURE_GROUPMEMBERSONLY:
+            return true;
+        case FEATURE_MOD_INTRO:
+            return true;
+        case FEATURE_COMPLETION_TRACKS_VIEWS:
+            return true;
+        case FEATURE_GRADE_HAS_GRADE:
+            return true;
+        case FEATURE_GRADE_OUTCOMES:
+            return true;
+        case FEATURE_GRADE_HAS_GRADE:
+            return true;
+        case FEATURE_BACKUP_MOODLE2:
+            return true;
+        case FEATURE_SHOW_DESCRIPTION:
+            return true;
+        case FEATURE_ADVANCED_GRADING:
+            return true;
 
-function videoboard_supports($feature) {
-    switch($feature) {
-        case FEATURE_GROUPS:                  return true;
-        case FEATURE_GROUPINGS:               return true;
-        case FEATURE_GROUPMEMBERSONLY:        return true;
-        case FEATURE_MOD_INTRO:               return true;
-        case FEATURE_COMPLETION_TRACKS_VIEWS: return true;
-        case FEATURE_GRADE_HAS_GRADE:         return true;
-        case FEATURE_GRADE_OUTCOMES:          return true;
-        case FEATURE_GRADE_HAS_GRADE:         return true;
-        case FEATURE_BACKUP_MOODLE2:          return false;
-        case FEATURE_SHOW_DESCRIPTION:        return true;
-        case FEATURE_ADVANCED_GRADING:        return true;
-
-        default: return null;
+        default:
+            return null;
     }
 }
 
-function videoboard_grading_areas_list(){
-  return array('submission' => get_string('submissions', 'mod_videoboard'));
+function videoboard_grading_areas_list()
+{
+    return array('submission' => get_string('submissions', 'mod_videoboard'));
 }
 
 /*
 function videoboard_scale_used_anywhere($scaleid) {
     global $DB;
-    
+
     if ($scaleid and $DB->record_exists('videoboard', array('grade' => -$scaleid))) {
         return true;
     } else {
@@ -405,57 +470,59 @@ function videoboard_uninstall() {
 }
 */
 
-function videoboard_runExternal( $cmd, &$code ) {
+function videoboard_runExternal($cmd, &$code)
+{
 
-   $descriptorspec = array(
-       0 => array("pipe", "r"), 
-       1 => array("pipe", "w"), 
-       2 => array("pipe", "w") 
-   );
+    $descriptorspec = array(
+        0 => array("pipe", "r"),
+        1 => array("pipe", "w"),
+        2 => array("pipe", "w")
+    );
 
-   $pipes= array();
-   $process = proc_open($cmd, $descriptorspec, $pipes);
+    $pipes = array();
+    $process = proc_open($cmd, $descriptorspec, $pipes);
 
-   $output= "";
+    $output = "";
 
-   if (!is_resource($process)) return false;
+    if (!is_resource($process)) return false;
 
-   fclose($pipes[0]);
+    fclose($pipes[0]);
 
-   stream_set_blocking($pipes[1],false);
-   stream_set_blocking($pipes[2],false);
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
 
-   $todo= array($pipes[1],$pipes[2]);
+    $todo = array($pipes[1], $pipes[2]);
 
-   while( true ) {
-       $read= array();
-       if( !feof($pipes[1]) ) $read[]= $pipes[1];
-       if( !feof($pipes[2]) ) $read[]= $pipes[2];
+    while (true) {
+        $read = array();
+        if (!feof($pipes[1])) $read[] = $pipes[1];
+        if (!feof($pipes[2])) $read[] = $pipes[2];
 
-       if (!$read) break;
+        if (!$read) break;
 
-       $ready= stream_select($read, $write=NULL, $ex= NULL, 2);
+        $ready = stream_select($read, $write = NULL, $ex = NULL, 2);
 
-       if ($ready === false) {
-           break; 
-       }
+        if ($ready === false) {
+            break;
+        }
 
-       foreach ($read as $r) {
-           $s= fread($r,1024);
-           $output.= $s;
-       }
-   }
+        foreach ($read as $r) {
+            $s = fread($r, 1024);
+            $output .= $s;
+        }
+    }
 
-   fclose($pipes[1]);
-   fclose($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
 
-   $code= proc_close($process);
+    $code = proc_close($process);
 
-   return $output;
+    return $output;
 }
 
 
-function videoboard_sort_table_data ($data, $titlesarray, $orderby, $sort) {
+function videoboard_sort_table_data($data, $titlesarray, $orderby, $sort)
+{
     global $USER, $CFG;
 
     $j = 0;
@@ -475,52 +542,52 @@ function videoboard_sort_table_data ($data, $titlesarray, $orderby, $sort) {
     foreach ($data as $datakey => $datavalue) {
         if (!is_array($datavalue[$orderkey])) {
             $key = $datavalue[$orderkey];
-        }  else  {
+        } else {
             $key = $datavalue[$orderkey][1];
         }
 
-        for ($j=0; $j < count($datavalue); $j++) {
+        for ($j = 0; $j < count($datavalue); $j++) {
             if (!is_array($datavalue[$j])) {
                 $newarray[(string)$key][$i][$j] = $datavalue[$j];
-            }  else  {
+            } else {
                 $newarray[(string)$key][$i][$j] = $datavalue[$j][0];
             }
         }
-        
-        $i ++;
+
+        $i++;
     }
-    
+
     if (empty($orderby) || $orderby == "ASC") {
-        ksort ($newarray); 
-    }  else  {
-        krsort ($newarray);
+        ksort($newarray);
+    } else {
+        krsort($newarray);
     }
-    
+
     reset($newarray);
-    
+
     foreach ($newarray as $newarray_) {
         foreach ($newarray_ as $newarray__) {
-            $newarraynew = array ();
+            $newarraynew = array();
             foreach ($newarray__ as $newarray___) {
                 $newarraynew[] = $newarray___;
             }
             $finaldata[] = $newarraynew;
         }
     }
-    
+
     return $finaldata;
 }
 
 
-
-function videoboard_make_table_headers ($titlesarray, $orderby, $sort, $link) {
+function videoboard_make_table_headers($titlesarray, $orderby, $sort, $link)
+{
     global $USER, $CFG;
 
     if ($orderby == "ASC") {
-        $columndir    = "DESC";
+        $columndir = "DESC";
         $columndirimg = "down";
     } else {
-        $columndir    = "ASC";
+        $columndir = "ASC";
         $columndirimg = "up";
     }
 
@@ -528,225 +595,226 @@ function videoboard_make_table_headers ($titlesarray, $orderby, $sort, $link) {
         if ($sort != $titlesarrayvalue) {
             $columnicon = "";
         } else {
-            $iconlink   = new moodle_url("/theme/image.php", array("theme" => $CFG->theme, "image" => "t/{$columndirimg}", "rev" => $CFG->themerev));
+            $iconlink = new moodle_url("/theme/image.php", array("theme" => $CFG->theme, "image" => "t/{$columndirimg}", "rev" => $CFG->themerev));
             $columnicon = " <img src=\"{$iconlink}\" alt=\"\" />";
         }
         if (!empty($titlesarrayvalue)) {
-            $table->head[] = "<a href=\"".$link."&sort=$titlesarrayvalue&orderby=$columndir\">$titlesarraykey</a>$columnicon";
+            $table->head[] = "<a href=\"" . $link . "&sort=$titlesarrayvalue&orderby=$columndir\">$titlesarraykey</a>$columnicon";
         } else {
             $table->head[] = "$titlesarraykey";
-        } 
+        }
     }
-    
+
     return $table->head;
 }
 
 
-
-function videoboard_set_rait ($fileid, $type) {
+function videoboard_set_rait($fileid, $type)
+{
     global $CFG, $USER, $DB, $videoboard, $id;
-    
-    $list = $DB->get_record ("videoboard_files", array("id" => $fileid));
-    
+
+    $list = $DB->get_record("videoboard_files", array("id" => $fileid));
+
     $cm = get_coursemodule_from_id(NULL, $list->instance);
-    
-    $context = get_context_instance(CONTEXT_MODULE, $cm->id);
-    
-    $rate        = 0;
-    $cuser       = 0;
+
+    $context = context_module::instance($cm->id);
+
+    $rate = 0;
+    $cuser = 0;
     $rateteacher = 0;
-    $cteacher    = 0;
-    $deletepeer  = "";
-    $deletelike  = "";
-    
+    $cteacher = 0;
+    $deletepeer = "";
+    $deletelike = "";
+
     if (has_capability('mod/videoboard:teacher', $context))
-      $deletepeer = html_writer::tag('div', html_writer::link(new moodle_url('/mod/videoboard/deletepeers.php', array("id" => $cm->id, "a" => "delete", "fileid" => $fileid)), get_string("delete", "videoboard")));
-      
+        $deletepeer = html_writer::tag('div', html_writer::link(new moodle_url('/mod/videoboard/deletepeers.php', array("id" => $cm->id, "a" => "delete", "fileid" => $fileid)), get_string("delete", "videoboard")));
+
     if (has_capability('mod/videoboard:teacher', $context))
-      $deletelike = html_writer::tag('div', html_writer::link(new moodle_url('/mod/videoboard/deletelikes.php', array("id" => $cm->id, "a" => "delete", "fileid" => $fileid)), get_string("delete", "videoboard")));
+        $deletelike = html_writer::tag('div', html_writer::link(new moodle_url('/mod/videoboard/deletelikes.php', array("id" => $cm->id, "a" => "delete", "fileid" => $fileid)), get_string("delete", "videoboard")));
 
     if ($allvoites = $DB->get_records("videoboard_ratings", array("fileid" => $fileid))) {
-      foreach ($allvoites as $allvoite) {
-        if (!has_capability('mod/videoboard:teacher', $context, $allvoite->userid) && !empty($allvoite->rating)) {
-           $rate += $allvoite->rating;
-           $cuser++;
+        foreach ($allvoites as $allvoite) {
+            if (!has_capability('mod/videoboard:teacher', $context, $allvoite->userid) && !empty($allvoite->rating)) {
+                $rate += $allvoite->rating;
+                $cuser++;
+            }
         }
-      }
-      if ($cuser > 0)
-        $rate = round ($rate/$cuser,1);
+        if ($cuser > 0)
+            $rate = round($rate / $cuser, 1);
 
-      foreach ($allvoites as $allvoite) {
-        if (has_capability('mod/videoboard:teacher', $context, $allvoite->userid) && !empty($allvoite->rating)) {
-          $rateteacher += $allvoite->rating;
-          $cteacher++;
+        foreach ($allvoites as $allvoite) {
+            if (has_capability('mod/videoboard:teacher', $context, $allvoite->userid) && !empty($allvoite->rating)) {
+                $rateteacher += $allvoite->rating;
+                $cteacher++;
+            }
         }
-      }
-      if ($cteacher > 0) 
-        $rateteacher = round ($rateteacher/$cteacher,1);
+        if ($cteacher > 0)
+            $rateteacher = round($rateteacher / $cteacher, 1);
     }
-    
-    if ($cuser == 0) { 
-      $rate = get_string('norateyet', 'videoboard');
-      $deletepeer = "";
+
+    if ($cuser == 0) {
+        $rate = get_string('norateyet', 'videoboard');
+        $deletepeer = "";
     }
-    
+
     if ($cteacher == 0) $rateteacher = get_string('norateyet', 'videoboard');
-    
-/*
-* Take from Rubtic
-*/
-    
+
+    /*
+    * Take from Rubtic
+    */
+
     $catdata = $DB->get_record("grade_items", array("courseid" => $cm->course, "iteminstance" => $cm->instance, "itemmodule" => 'videoboard'));
     if ($grid = $DB->get_record("grade_grades", array("itemid" => $catdata->id, "userid" => $list->userid)))
-      $rateteacher = round($grid->finalgrade, 1);
+        $rateteacher = round($grid->finalgrade, 1);
 
     $levels = array("-");
-    for ($i=1; $i <= $catdata->grademax; $i++) {
+    for ($i = 1; $i <= $catdata->grademax; $i++) {
         $levels[] = $i;
     }
 
     $levelst = array("-");
-    for ($i=1; $i <= $videoboard->gradet; $i++) {
+    for ($i = 1; $i <= $videoboard->gradet; $i++) {
         $levelst[] = $i;
     }
-    
+
     $o = "";
-    
+
     $o .= html_writer::start_tag('div');
-    
+
     if ($currentuserrate = $DB->get_record("videoboard_ratings", array("fileid" => $fileid, "userid" => $list->userid))) {
-      if ($type == 1) {
-        if (empty($currentuserrate->ratingrhythm)) $currentuserrate->ratingrhythm = get_string('norateyet', 'videoboard');
-        $o .= html_writer::tag('small', $currentuserrate->ratingrhythm);
-      }
-      if ($type == 2) {
-        if (empty($currentuserrate->ratingclear)) $currentuserrate->ratingclear = get_string('norateyet', 'videoboard');
-        $o .= html_writer::tag('small', $currentuserrate->ratingclear);
-      }
-      if ($type == 3) {
-        if (empty($currentuserrate->ratingintonation)) $currentuserrate->ratingintonation = get_string('norateyet', 'videoboard');
-        $o .= html_writer::tag('small', $currentuserrate->ratingintonation);
-      }
-      if ($type == 4) {
-        if (empty($currentuserrate->ratingspeed)) $currentuserrate->ratingspeed = get_string('norateyet', 'videoboard');
-        $o .= html_writer::tag('small', $currentuserrate->ratingspeed);
-      }
-      if ($type == 5) {
-        if (empty($currentuserrate->ratingreproduction)) $currentuserrate->ratingreproduction = get_string('norateyet', 'videoboard');
-        $o .= html_writer::tag('small', $currentuserrate->ratingreproduction);
-      }
+        if ($type == 1) {
+            if (empty($currentuserrate->ratingrhythm)) $currentuserrate->ratingrhythm = get_string('norateyet', 'videoboard');
+            $o .= html_writer::tag('small', $currentuserrate->ratingrhythm);
+        }
+        if ($type == 2) {
+            if (empty($currentuserrate->ratingclear)) $currentuserrate->ratingclear = get_string('norateyet', 'videoboard');
+            $o .= html_writer::tag('small', $currentuserrate->ratingclear);
+        }
+        if ($type == 3) {
+            if (empty($currentuserrate->ratingintonation)) $currentuserrate->ratingintonation = get_string('norateyet', 'videoboard');
+            $o .= html_writer::tag('small', $currentuserrate->ratingintonation);
+        }
+        if ($type == 4) {
+            if (empty($currentuserrate->ratingspeed)) $currentuserrate->ratingspeed = get_string('norateyet', 'videoboard');
+            $o .= html_writer::tag('small', $currentuserrate->ratingspeed);
+        }
+        if ($type == 5) {
+            if (empty($currentuserrate->ratingreproduction)) $currentuserrate->ratingreproduction = get_string('norateyet', 'videoboard');
+            $o .= html_writer::tag('small', $currentuserrate->ratingreproduction);
+        }
     } else {
-      if ($type < 6) {
-        $o .= html_writer::tag('small', get_string('norateyet', 'videoboard'));
-      }
+        if ($type < 6) {
+            $o .= html_writer::tag('small', get_string('norateyet', 'videoboard'));
+        }
     }
-    
+
     if ($type == 6) {
-      if($videoboard->grademethod == "like") {
-        if ($crlike = $DB->count_records("videoboard_likes", array("fileid" => $fileid)))
-          $o .= html_writer::tag('div', $crlike, array('class'=>'vs-like-grade')). " " . $deletelike;
-      } else
-        $o .= html_writer::tag('small', $rate) . " " . $deletepeer;
+        if ($videoboard->grademethod == "like") {
+            if ($crlike = $DB->count_records("videoboard_likes", array("fileid" => $fileid)))
+                $o .= html_writer::tag('div', $crlike, array('class' => 'vs-like-grade')) . " " . $deletelike;
+        } else
+            $o .= html_writer::tag('small', $rate) . " " . $deletepeer;
     }
-    
+
     if ($type == 7) {
-      if ($USER->id == $list->userid || has_capability('mod/videoboard:teacher', $context))
-        $o .= html_writer::tag('small', $rateteacher);
-      else
-        $o .= html_writer::tag('small', get_string('private', 'videoboard'));
+        if ($USER->id == $list->userid || has_capability('mod/videoboard:teacher', $context))
+            $o .= html_writer::tag('small', $rateteacher);
+        else
+            $o .= html_writer::tag('small', get_string('private', 'videoboard'));
     }
 
     if ($USER->id == $list->userid && $type < 6) {
-      $o .= html_writer::select($levels, 'rating', '', true, array("class" => "videoboard_rate_box", "data-url" => "{$fileid}::{$type}"));
+        $o .= html_writer::select($levels, 'rating', '', true, array("class" => "videoboard_rate_box", "data-url" => "{$fileid}::{$type}"));
     } else if ($USER->id != $list->userid) {
-      if ($type == 6 && !has_capability('mod/videoboard:teacher', $context)) {
-        if($videoboard->grademethod == "like") {
-          if ($crlike = $DB->get_record("videoboard_likes", array("fileid" => $fileid, "userid" => $USER->id)))
-            $o .= html_writer::link(new moodle_url('/mod/videoboard/view.php', array("id" => $id, "fileid" => $fileid, "act"=>"dellike")), html_writer::empty_tag("img", array("src" => new moodle_url('/mod/videoboard/img/flike.png'), "alt" => get_string("likethis", "videoboard"), "title" => get_string("dislike", "videoboard"), "class"=>"vs-like-dis")));
-          else
-            $o .= html_writer::link(new moodle_url('/mod/videoboard/view.php', array("id" => $id, "fileid" => $fileid, "act"=>"addlike")), html_writer::empty_tag("img", array("src" => new moodle_url('/mod/videoboard/img/flike.png'), "alt" => get_string("likethis", "videoboard"), "title" => get_string("like", "videoboard"))));
-        } else
-          $o .= html_writer::select($levels, 'rating', '', true, array("class" => "videoboard_rate_box", "data-url" => "{$fileid}::{$type}"))."";
-      }
+        if ($type == 6 && !has_capability('mod/videoboard:teacher', $context)) {
+            if ($videoboard->grademethod == "like") {
+                if ($crlike = $DB->get_record("videoboard_likes", array("fileid" => $fileid, "userid" => $USER->id)))
+                    $o .= html_writer::link(new moodle_url('/mod/videoboard/view.php', array("id" => $id, "fileid" => $fileid, "act" => "dellike")), html_writer::empty_tag("img", array("src" => new moodle_url('/mod/videoboard/img/flike.png'), "alt" => get_string("likethis", "videoboard"), "title" => get_string("dislike", "videoboard"), "class" => "vs-like-dis")));
+                else
+                    $o .= html_writer::link(new moodle_url('/mod/videoboard/view.php', array("id" => $id, "fileid" => $fileid, "act" => "addlike")), html_writer::empty_tag("img", array("src" => new moodle_url('/mod/videoboard/img/flike.png'), "alt" => get_string("likethis", "videoboard"), "title" => get_string("like", "videoboard"))));
+            } else
+                $o .= html_writer::select($levels, 'rating', '', true, array("class" => "videoboard_rate_box", "data-url" => "{$fileid}::{$type}")) . "";
+        }
 
-      if ($type == 7 && has_capability('mod/videoboard:teacher', $context) && $videoboard->grademethodt == "default") 
-        $o .= html_writer::select($levelst, 'rating', '', true, array("class" => "videoboard_rate_box", "data-url" => "{$fileid}::{$type}"));
+        if ($type == 7 && has_capability('mod/videoboard:teacher', $context) && $videoboard->grademethodt == "default")
+            $o .= html_writer::select($levelst, 'rating', '', true, array("class" => "videoboard_rate_box", "data-url" => "{$fileid}::{$type}"));
     }
-    
+
     $o .= html_writer::end_tag('div');
-    
+
     return $o;
 }
 
 
-function videoboard_get_pages($table, $page, $perpage) {
+function videoboard_get_pages($table, $page, $perpage)
+{
     global $CFG, $course;
-    
-    $totalcount = count ($table);
-    $startrec  = $page * $perpage;
+
+    $totalcount = count($table);
+    $startrec = $page * $perpage;
     $finishrec = $startrec + $perpage;
-    
+
     foreach ($table as $key => $value) {
         if ($key >= $startrec && $key < $finishrec) {
             $viewtable[] = $value;
         }
     }
-    
+
     return array($totalcount, $viewtable, $startrec, $finishrec, $page);
 }
 
 
-function videoboard_player($ids, $table = "videoboard_files"){
-    global $DB, $CFG, $videoboard_vc, $cm;
-    
-    $context = get_context_instance(CONTEXT_MODULE, $cm->id);
-    
+function videoboard_player($ids, $table = "videoboard_files")
+{
+    global $DB, $videoboard_vc;
+
     if (!isset($videoboard_vc)) $videoboard_vc = 0;
-    
+
     $videoboard_vc++;
-    
+
     if ($data = $DB->get_record($table, array("id" => $ids))) {
-      if (!empty($data->itemyoutube)) {
-        $o = videoboard_player_youtube($data->itemyoutube, $data->id);
-      } else if ($data->itemid == 0) {
+        if (!empty($data->itemyoutube)) {
+            $o = videoboard_player_youtube($data->itemyoutube, $data->id);
+        } else if ($data->itemid == 0) {
 ///Show MOV video file
-        if ($itemold = $DB->get_record("files", array("id" => $data->itemoldid))) {
-            if (in_array($itemold->mimetype, json_decode(VIDEOBOARD_VIDEOTYPES))) {
-                $link = new moodle_url("/pluginfile.php/".$itemold->contextid."/mod_videoboard/".$ids."/".$itemold->id."/".$itemold->filename);
-                
-                $o = videoboard_player_video($link, $itemold->mimetype, null, $itemold->id);
-            } else {
-                if(!$DB->get_record("videoboard_process", array("itemid"=>$data->itemoldid)))
-                  $o = get_string('pleaseerrorinprocess', 'videoboard');
-                else
-                  $o = get_string('pleasewaitinprocess', 'videoboard');
+            if ($itemold = $DB->get_record("files", array("id" => $data->itemoldid))) {
+                if (in_array($itemold->mimetype, json_decode(VIDEOBOARD_VIDEOTYPES))) {
+                    $link = new moodle_url("/pluginfile.php/" . $itemold->contextid . "/mod_videoboard/" . $ids . "/" . $itemold->id . "/" . $itemold->filename);
+
+                    $o = videoboard_player_video($link, $itemold->mimetype, null, $itemold->id);
+                } else {
+                    if (!$DB->get_records("videoboard_process", array("itemid" => $data->itemoldid)))
+                        $o = get_string('pleaseerrorinprocess', 'videoboard');
+                    else
+                        $o = get_string('pleasewaitinprocess', 'videoboard');
+                }
+            }
+        } else {
+///Show mp4 converted video file
+            if ($item = $DB->get_record("files", array("id" => $data->itemid))) {
+                $link = new moodle_url("/pluginfile.php/" . $item->contextid . "/mod_videoboard/" . $ids . "/" . $data->itemid . "/" . $item->filename);
+
+                if (in_array($item->mimetype, json_decode(VIDEOBOARD_AUDIOTYPES))) {
+                    $o = videoboard_player_mp3($link, $item->mimetype, $item->id);
+                } else if (in_array($item->mimetype, json_decode(VIDEOBOARD_VIDEOTYPES))) {
+                    $itemimg = $DB->get_record("files", array("id" => $data->itemimgid));
+                    $linkimg = new moodle_url("/pluginfile.php/" . $itemimg->contextid . "/mod_videoboard/" . $ids . "/" . $data->itemimgid);
+
+                    $o = videoboard_player_video($link, $item->mimetype, $linkimg, $item->id);
+                }
+
             }
         }
-      } else {
-///Show mp4 converted video file
-        if ($item = $DB->get_record("files", array("id" => $data->itemid))) {
-          $link = new moodle_url("/pluginfile.php/".$item->contextid."/mod_videoboard/".$ids."/".$data->itemid."/".$item->filename);
-
-          if (in_array($item->mimetype, json_decode(VIDEOBOARD_AUDIOTYPES))) {
-              $o = videoboard_player_mp3($link, $item->mimetype, $item->id);
-          } else if (in_array($item->mimetype, json_decode(VIDEOBOARD_VIDEOTYPES))) {
-              $itemimg = $DB->get_record("files", array("id" => $data->itemimgid));
-              $linkimg = new moodle_url("/pluginfile.php/".$itemimg->contextid."/mod_videoboard/".$ids."/".$data->itemimgid);
-              
-              $o = videoboard_player_video($link, $item->mimetype, $linkimg, $item->id);
-          }
-          
-        }
-      }
     }
 
     return $o;
 }
 
 
-function videoboard_pluginfile($course, $cm, $context, $filearea, $args, $forcedownload) {
-    global $CFG, $DB;
-    
+function videoboard_pluginfile($course, $cm, $context, $filearea, $args, $forcedownload)
+{
+    global $DB;
+
     $id = array_shift($args);
 
     if ($context->contextlevel != CONTEXT_MODULE) {
@@ -755,65 +823,72 @@ function videoboard_pluginfile($course, $cm, $context, $filearea, $args, $forced
 
     require_login($course, false, $cm);
 
-    if (!$videoboard = $DB->get_record('videoboard', array('id'=>$cm->instance))) {
+    if (!$videoboard = $DB->get_record('videoboard', array('id' => $cm->instance))) {
         return false;
     }
-    
+
     $f = get_file_storage();
 
-    if ($file_record = $DB->get_record('files', array('id'=>$id))) {
-      $file = $f->get_file_instance($file_record);
-      videoboard_send_stored_file($file, 86400, 0, false);  //forcedownload false
-      
-      //send_stored_file($file);  //forcedownload false
+    if ($file_record = $DB->get_record('files', array('id' => $id))) {
+        $file = $f->get_file_instance($file_record);
+        videoboard_send_stored_file($file, 86400, 0, false);  //forcedownload false
     } else {
-      send_file_not_found();
+        send_file_not_found();
     }
 }
 
 
-
-function videoboard_is_ios(){
-  if (strstr($_SERVER['HTTP_USER_AGENT'], "iPhone") || strstr($_SERVER['HTTP_USER_AGENT'], "iPad")) 
-    return true;
-  else
-    return false;
+function videoboard_is_ios()
+{
+    if (strstr($_SERVER['HTTP_USER_AGENT'], "iPhone") || strstr($_SERVER['HTTP_USER_AGENT'], "iPad"))
+        return true;
+    else
+        return false;
 }
 
-function videoboard_getfile($itemid){
-  global $DB, $CFG;
-  
-  if ($file = $DB->get_record_sql("SELECT * FROM {files} WHERE `itemid`=? AND `filesize` != 0", array($itemid))){
-    $contenthash = $file->contenthash;
-    $l1 = $contenthash[0].$contenthash[1];
-    $l2 = $contenthash[2].$contenthash[3];
-    $filepatch = $CFG->dataroot."/filedir/$l1/$l2/$contenthash";
-    
-    $file->fullpatch = $filepatch;
-    
-    return $file;
-  } else
-    return false;
+function videoboard_getfile($itemid)
+{
+    global $DB, $CFG;
+
+    if ($file = $DB->get_record_sql("SELECT * FROM {files} WHERE `itemid`=? AND `filesize` != 0 AND `component` = 'mod_videoboard' AND `filearea` = 'private'", array($itemid))) {
+    } else if ($file = $DB->get_record_sql("SELECT * FROM {files} WHERE `itemid`=? AND `filesize` != 0 AND `component` = 'user' AND `filearea` = 'public'", array($itemid))) {
+    } else if ($file = $DB->get_record_sql("SELECT * FROM {files} WHERE `itemid`=? AND `filesize` != 0 AND `component` = 'user' AND `filearea` = 'draft'", array($itemid))) {
+        $DB->set_field("files", "filearea", "public", array("itemid" => $itemid));
+    }
+
+    if ($file = $DB->get_record_sql("SELECT * FROM {files} WHERE `itemid`=? AND `component` = 'mod_videoboard' AND `filesize` != 0 LIMIT 1", array($itemid))) {
+        $contenthash = $file->contenthash;
+        $l1 = $contenthash[0] . $contenthash[1];
+        $l2 = $contenthash[2] . $contenthash[3];
+        $filepatch = $CFG->dataroot . "/filedir/$l1/$l2/$contenthash";
+
+        $file->fullpatch = $filepatch;
+
+        return $file;
+    } else
+        return false;
 }
 
-function videoboard_getfileid($itemid){
-  global $DB, $CFG;
-  
-  if ($file = $DB->get_record("files", array("id" => $itemid))){
-    $contenthash = $file->contenthash;
-    $l1 = $contenthash[0].$contenthash[1];
-    $l2 = $contenthash[2].$contenthash[3];
-    $filepatch = $CFG->dataroot."/filedir/$l1/$l2/$contenthash";
-    
-    $file->fullpatch = $filepatch;
-    
-    return $file;
-  } else
-    return false;
+function videoboard_getfileid($itemid)
+{
+    global $DB, $CFG;
+
+    if ($file = $DB->get_record("files", array("id" => $itemid))) {
+        $contenthash = $file->contenthash;
+        $l1 = $contenthash[0] . $contenthash[1];
+        $l2 = $contenthash[2] . $contenthash[3];
+        $filepatch = $CFG->dataroot . "/filedir/$l1/$l2/$contenthash";
+
+        $file->fullpatch = $filepatch;
+
+        return $file;
+    } else
+        return false;
 }
 
 
-function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, $forcedownload=false, $filename=null, $dontdie=false) {
+function videoboard_send_stored_file($stored_file, $lifetime = 86400, $filter = 0, $forcedownload = false, $filename = null, $dontdie = false)
+{
     global $CFG, $COURSE, $SESSION;
 
     if (!$stored_file or $stored_file->is_directory()) {
@@ -828,28 +903,28 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
         ignore_user_abort(true);
     }
 
-    session_get_instance()->write_close(); // unlock session during fileserving
+    \core\session\manager::write_close(); // unlock session during fileserving
 
     // Use given MIME type if specified, otherwise guess it using mimeinfo.
     // IE, Konqueror and Opera open html file directly in browser from web even when directed to save it to disk :-O
     // only Firefox saves all files locally before opening when content-disposition: attachment stated
-    
-    $filename     = is_null($filename) ? $stored_file->get_filename() : $filename;
-    $isFF         = check_browser_version('Firefox', '1.5'); // only FF > 1.5 properly tested
-    $mimetype     = ($forcedownload and !$isFF) ? 'application/x-forcedownload' :
-                         ($stored_file->get_mimetype() ? $stored_file->get_mimetype() : mimeinfo('type', $filename));
+
+    $filename = is_null($filename) ? $stored_file->get_filename() : $filename;
+    $isFF = core_useragent::check_browser_version('Firefox', '1.5'); // only FF > 1.5 properly tested
+    $mimetype = ($forcedownload and !$isFF) ? 'application/x-forcedownload' :
+        ($stored_file->get_mimetype() ? $stored_file->get_mimetype() : mimeinfo('type', $filename));
 
     $lastmodified = $stored_file->get_timemodified();
-    $filesize     = $stored_file->get_filesize();
+    $filesize = $stored_file->get_filesize();
 
     if ($lifetime > 0 && !empty($_SERVER['HTTP_IF_MODIFIED_SINCE'])) {
         // get unixtime of request header; clip extra junk off first
-        $since = strtotime(preg_replace('/;.*$/','',$_SERVER["HTTP_IF_MODIFIED_SINCE"]));
+        $since = strtotime(preg_replace('/;.*$/', '', $_SERVER["HTTP_IF_MODIFIED_SINCE"]));
         if ($since && $since >= $lastmodified) {
             header('HTTP/1.1 304 Not Modified');
-            header('Expires: '. gmdate('D, d M Y H:i:s', time() + $lifetime) .' GMT');
-            header('Cache-Control: max-age='.$lifetime);
-            header('Content-Type: '.$mimetype);
+            header('Expires: ' . gmdate('D, d M Y H:i:s', time() + $lifetime) . ' GMT');
+            header('Cache-Control: max-age=' . $lifetime);
+            header('Content-Type: ' . $mimetype);
             if ($dontdie) {
                 return;
             }
@@ -859,63 +934,63 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
 
     //do not put '@' before the next header to detect incorrect moodle configurations,
     //error should be better than "weird" empty lines for admins/users
-    header('Last-Modified: '. gmdate('D, d M Y H:i:s', $lastmodified) .' GMT');
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $lastmodified) . ' GMT');
 
     // if user is using IE, urlencode the filename so that multibyte file name will show up correctly on popup
-    if (check_browser_version('MSIE')) {
+    if (core_useragent::check_browser_version('MSIE')) {
         $filename = rawurlencode($filename);
     }
 
     if ($forcedownload) {
-        header('Content-Disposition: attachment; filename="'.$filename.'"');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
     } else {
-        header('Content-Disposition: inline; filename="'.$filename.'"');
+        header('Content-Disposition: inline; filename="' . $filename . '"');
     }
 
-        header('Cache-Control: max-age='.$lifetime);
-        header('Expires: '. gmdate('D, d M Y H:i:s', time() + $lifetime) .' GMT');
-        header('Pragma: ');
-        header('Accept-Ranges: bytes');
+    header('Cache-Control: max-age=' . $lifetime);
+    header('Expires: ' . gmdate('D, d M Y H:i:s', time() + $lifetime) . ' GMT');
+    header('Pragma: ');
+    header('Accept-Ranges: bytes');
 
-        if (!empty($_SERVER['HTTP_RANGE']) && strpos($_SERVER['HTTP_RANGE'],'bytes=') !== FALSE) {
-            // byteserving stuff - for acrobat reader and download accelerators
-            // see: http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.35
-            // inspired by: http://www.coneural.org/florian/papers/04_byteserving.php
-            $ranges = false;
-            if (preg_match_all('/(\d*)-(\d*)/', $_SERVER['HTTP_RANGE'], $ranges, PREG_SET_ORDER)) {
-                foreach ($ranges as $key=>$value) {
-                    if ($ranges[$key][1] == '') {
-                        //suffix case
-                        $ranges[$key][1] = $filesize - $ranges[$key][2];
-                        $ranges[$key][2] = $filesize - 1;
-                    } else if ($ranges[$key][2] == '' || $ranges[$key][2] > $filesize - 1) {
-                        //fix range length
-                        $ranges[$key][2] = $filesize - 1;
-                    }
-                    if ($ranges[$key][2] != '' && $ranges[$key][2] < $ranges[$key][1]) {
-                        //invalid byte-range ==> ignore header
-                        $ranges = false;
-                        break;
-                    }
-                    //prepare multipart header
-                    $ranges[$key][0] =  "\r\n--".BYTESERVING_BOUNDARY."\r\nContent-Type: $mimetype\r\n";
-                    $ranges[$key][0] .= "Content-Range: bytes {$ranges[$key][1]}-{$ranges[$key][2]}/$filesize\r\n\r\n";
+    if (!empty($_SERVER['HTTP_RANGE']) && strpos($_SERVER['HTTP_RANGE'], 'bytes=') !== FALSE) {
+        // byteserving stuff - for acrobat reader and download accelerators
+        // see: http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.35
+        // inspired by: http://www.coneural.org/florian/papers/04_byteserving.php
+        $ranges = false;
+        if (preg_match_all('/(\d*)-(\d*)/', $_SERVER['HTTP_RANGE'], $ranges, PREG_SET_ORDER)) {
+            foreach ($ranges as $key => $value) {
+                if ($ranges[$key][1] == '') {
+                    //suffix case
+                    $ranges[$key][1] = $filesize - $ranges[$key][2];
+                    $ranges[$key][2] = $filesize - 1;
+                } else if ($ranges[$key][2] == '' || $ranges[$key][2] > $filesize - 1) {
+                    //fix range length
+                    $ranges[$key][2] = $filesize - 1;
                 }
-            } else {
-                $ranges = false;
+                if ($ranges[$key][2] != '' && $ranges[$key][2] < $ranges[$key][1]) {
+                    //invalid byte-range ==> ignore header
+                    $ranges = false;
+                    break;
+                }
+                //prepare multipart header
+                $ranges[$key][0] = "\r\n--" . BYTESERVING_BOUNDARY . "\r\nContent-Type: $mimetype\r\n";
+                $ranges[$key][0] .= "Content-Range: bytes {$ranges[$key][1]}-{$ranges[$key][2]}/$filesize\r\n\r\n";
             }
-            if ($ranges) {
-                byteserving_send_file($stored_file->get_content_file_handle(), $mimetype, $ranges, $filesize);
-            }
+        } else {
+            $ranges = false;
         }
+        if ($ranges) {
+            byteserving_send_file($stored_file->get_content_file_handle(), $mimetype, $ranges, $filesize);
+        }
+    }
 
     if (empty($filter)) {
         if ($mimetype == 'text/plain') {
             header('Content-Type: Text/plain; charset=utf-8'); //add encoding
         } else {
-            header('Content-Type: '.$mimetype);
+            header('Content-Type: ' . $mimetype);
         }
-        header('Content-Length: '.$filesize);
+        header('Content-Length: ' . $filesize);
 
         //flush the buffers - save memory and disable sid rewrite
         //this also disables zlib compression
@@ -932,7 +1007,7 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
             $text = file_modify_html_header($text);
             $output = format_text($text, FORMAT_HTML, $options, $COURSE->id);
 
-            header('Content-Length: '.strlen($output));
+            header('Content-Length: ' . strlen($output));
             header('Content-Type: text/html');
 
             //flush the buffers - save memory and disable sid rewrite
@@ -947,9 +1022,9 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
             $options->newlines = false;
             $options->noclean = true;
             $text = $stored_file->get_content();
-            $output = '<pre>'. format_text($text, FORMAT_MOODLE, $options, $COURSE->id) .'</pre>';
+            $output = '<pre>' . format_text($text, FORMAT_MOODLE, $options, $COURSE->id) . '</pre>';
 
-            header('Content-Length: '.strlen($output));
+            header('Content-Length: ' . strlen($output));
             header('Content-Type: text/html; charset=utf-8'); //add encoding
 
             //flush the buffers - save memory and disable sid rewrite
@@ -959,8 +1034,8 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
             // send the contents
             echo $output;
         } else {    // Just send it out raw
-            header('Content-Length: '.$filesize);
-            header('Content-Type: '.$mimetype);
+            header('Content-Length: ' . $filesize);
+            header('Content-Type: ' . $mimetype);
 
             //flush the buffers - save memory and disable sid rewrite
             //this also disables zlib compression
@@ -970,7 +1045,7 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
             $stored_file->readfile();
         }
     }
-    
+
     if ($dontdie) {
         return;
     }
@@ -978,14 +1053,15 @@ function videoboard_send_stored_file($stored_file, $lifetime=86400 , $filter=0, 
 }
 
 
-function videoboard_prepare_file_content_sending() {
+function videoboard_prepare_file_content_sending()
+{
     $olddebug = error_reporting(0);
 
     if (ini_get_bool('zlib.output_compression')) {
         ini_set('zlib.output_compression', 'Off');
     }
 
-    while(ob_get_level()) {
+    while (ob_get_level()) {
         if (!ob_end_flush()) {
             break;
         }
@@ -995,75 +1071,74 @@ function videoboard_prepare_file_content_sending() {
 }
 
 
-function videoboard_rangeDownload($file) {
-  $fp = @fopen($file, 'rb');
- 
-  $size   = filesize($file); 
-  $length = $size;   
-  $start  = 0;   
-  $end= $size - 1;   
+function videoboard_rangeDownload($file)
+{
+    $fp = @fopen($file, 'rb');
 
-  header("Accept-Ranges: 0-$length");
+    $size = filesize($file);
+    $length = $size;
+    $start = 0;
+    $end = $size - 1;
 
-  if (isset($_SERVER['HTTP_RANGE'])) {
-    $c_start = $start;
-    $c_end   = $end;
+    header("Accept-Ranges: 0-$length");
 
-    list(, $range) = explode('=', $_SERVER['HTTP_RANGE'], 2);
+    if (isset($_SERVER['HTTP_RANGE'])) {
+        $c_start = $start;
+        $c_end = $end;
 
-    if (strpos($range, ',') !== false) {
-      header('HTTP/1.1 416 Requested Range Not Satisfiable');
-      header("Content-Range: bytes $start-$end/$size");
-      exit;
+        list(, $range) = explode('=', $_SERVER['HTTP_RANGE'], 2);
+
+        if (strpos($range, ',') !== false) {
+            header('HTTP/1.1 416 Requested Range Not Satisfiable');
+            header("Content-Range: bytes $start-$end/$size");
+            exit;
+        }
+
+        if ($range0 == '-') {
+            $c_start = $size - substr($range, 1);
+        } else {
+            $range = explode('-', $range);
+            $c_start = $range[0];
+            $c_end = (isset($range[1]) && is_numeric($range[1])) ? $range[1] : $size;
+        }
+
+        $c_end = ($c_end > $end) ? $end : $c_end;
+
+        if ($c_start > $c_end || $c_start > $size - 1 || $c_end >= $size) {
+            header('HTTP/1.1 416 Requested Range Not Satisfiable');
+            header("Content-Range: bytes $start-$end/$size");
+            exit;
+        }
+        $start = $c_start;
+        $end = $c_end;
+        $length = $end - $start + 1;
+        fseek($fp, $start);
+        header('HTTP/1.1 206 Partial Content');
     }
 
-    if ($range0 == '-') {
-      $c_start = $size - substr($range, 1);
-    } else {
-      $range  = explode('-', $range);
-      $c_start = $range[0];
-      $c_end   = (isset($range[1]) && is_numeric($range[1])) ? $range[1] : $size;
+    header("Content-Range: bytes $start-$end/$size");
+    header("Content-Length: $length");
+
+    $buffer = 1024 * 8;
+    while (!feof($fp) && ($p = ftell($fp)) <= $end) {
+        if ($p + $buffer > $end) {
+            $buffer = $end - $p + 1;
+        }
+        set_time_limit(0);
+        echo fread($fp, $buffer);
+        flush();
     }
 
-    $c_end = ($c_end > $end) ? $end : $c_end;
-
-    if ($c_start > $c_end || $c_start > $size - 1 || $c_end >= $size) {
-      header('HTTP/1.1 416 Requested Range Not Satisfiable');
-      header("Content-Range: bytes $start-$end/$size");
-      exit;
-    }
-    $start  = $c_start;
-    $end= $c_end;
-    $length = $end - $start + 1; 
-    fseek($fp, $start);
-    header('HTTP/1.1 206 Partial Content');
-  }
-
-  header("Content-Range: bytes $start-$end/$size");
-  header("Content-Length: $length");
- 
-  $buffer = 1024 * 8;
-  while(!feof($fp) && ($p = ftell($fp)) <= $end) {
-    if ($p + $buffer > $end) {
-      $buffer = $end - $p + 1;
-    }
-    set_time_limit(0); 
-    echo fread($fp, $buffer);
-    flush(); 
-  }
- 
-  fclose($fp);
+    fclose($fp);
 }
 
 
-
-
 /** Include eventslib.php */
-require_once($CFG->libdir.'/eventslib.php');
+require_once($CFG->libdir . '/eventslib.php');
 /** Include formslib.php */
-require_once($CFG->libdir.'/formslib.php');
+require_once($CFG->libdir . '/formslib.php');
 /** Include calendar/lib.php */
-require_once($CFG->dirroot.'/calendar/lib.php');
+require_once($CFG->dirroot . '/calendar/lib.php');
 
 /** videoboard_COUNT_WORDS = 1 */
 define('videoboard_COUNT_WORDS', 1);
@@ -1077,10 +1152,11 @@ define('videoboard_COUNT_LETTERS', 2);
  * @copyright 1999 onwards Martin Dougiamas  {@link http://moodle.com}
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-class videoboard_base {
+class videoboard_base
+{
 
-    const FILTER_ALL             = 0;
-    const FILTER_SUBMITTED       = 1;
+    const FILTER_ALL = 0;
+    const FILTER_SUBMITTED = 1;
     const FILTER_REQUIRE_GRADING = 2;
 
     /** @var object */
@@ -1129,7 +1205,8 @@ class videoboard_base {
      * @param object $cm usually null, but if we have it we pass it to save db access
      * @param object $course usually null, but if we have it we pass it to save db access
      */
-    function videoboard_base($cmid='staticonly', $videoboard=NULL, $cm=NULL, $course=NULL) {
+    public function __construct($cmid = 'staticonly', $videoboard = NULL, $cm = NULL, $course = NULL)
+    {
         global $COURSE, $DB;
 
         if ($cmid == 'staticonly') {
@@ -1141,42 +1218,47 @@ class videoboard_base {
 
         if ($cm) {
             $this->cm = $cm;
-        } else if (! $this->cm = get_coursemodule_from_id('videoboard', $cmid)) {
+        } else if (!$this->cm = get_coursemodule_from_id('videoboard', $cmid)) {
             print_error('invalidcoursemodule');
         }
 
-        $this->context = get_context_instance(CONTEXT_MODULE, $this->cm->id);
+        $this->context = context_module::instance($this->cm->id);
 
         if ($course) {
             $this->course = $course;
         } else if ($this->cm->course == $COURSE->id) {
             $this->course = $COURSE;
-        } else if (! $this->course = $DB->get_record('course', array('id'=>$this->cm->course))) {
+        } else if (!$this->course = $DB->get_record('course', array('id' => $this->cm->course))) {
             print_error('invalidid', 'videoboard');
         }
-        $this->coursecontext = get_context_instance(CONTEXT_COURSE, $this->course->id);
+        $this->coursecontext = context_course::instance($this->course->id);
         $courseshortname = format_text($this->course->shortname, true, array('context' => $this->coursecontext));
 
         if ($videoboard) {
             $this->videoboard = $videoboard;
-        } else if (! $this->videoboard = $DB->get_record('videoboard', array('id'=>$this->cm->instance))) {
+        } else if (!$this->videoboard = $DB->get_record('videoboard', array('id' => $this->cm->instance))) {
             print_error('invalidid', 'videoboard');
         }
 
         $this->videoboard->cmidnumber = $this->cm->idnumber; // compatibility with modedit videoboard obj
-        $this->videoboard->courseid   = $this->course->id; // compatibility with modedit videoboard obj
+        $this->videoboard->courseid = $this->course->id; // compatibility with modedit videoboard obj
 
         $this->strvideoboard = get_string('modulename', 'videoboard');
         $this->strvideoboards = get_string('modulenameplural', 'videoboard');
         $this->strsubmissions = get_string('submissions', 'videoboard');
         $this->strlastmodified = get_string('lastmodified');
-        $this->pagetitle = strip_tags($courseshortname.': '.$this->strvideoboard.': '.format_string($this->videoboard->name, true, array('context' => $this->context)));
+        $this->pagetitle = strip_tags($courseshortname . ': ' . $this->strvideoboard . ': ' . format_string($this->videoboard->name, true, array('context' => $this->context)));
 
         // visibility handled by require_login() with $cm parameter
         // get current group only when really needed
 
-    /// Set up things for a HTML editor if it's needed
+        /// Set up things for a HTML editor if it's needed
         $this->defaultformat = editors_get_preferred_format();
+    }
+
+    public function videoboard_base($cmid = 'staticonly', $videoboard = NULL, $cm = NULL, $course = NULL)
+    {
+        self::__construct($cmid = 'staticonly', $videoboard = NULL, $cm = NULL, $course = NULL);
     }
 
     /**
@@ -1184,13 +1266,12 @@ class videoboard_base {
      *
      * This in turn calls the methods producing individual parts of the page
      */
-    function view() {
+    function view()
+    {
 
-        $context = get_context_instance(CONTEXT_MODULE,$this->cm->id);
+        $context = context_module::instance($this->cm->id);
         require_capability('mod/videoboard:view', $context);
 
-        add_to_log($this->course->id, "videoboard", "view", "view.php?id={$this->cm->id}",
-                   $this->videoboard->id, $this->cm->id);
 
         $this->view_header();
 
@@ -1214,7 +1295,8 @@ class videoboard_base {
      * @global object
      * @param string $subpage Description of subpage to be used in navigation trail
      */
-    function view_header($subpage='') {
+    function view_header($subpage = '')
+    {
         global $CFG, $PAGE, $OUTPUT;
 
         if ($subpage) {
@@ -1228,7 +1310,7 @@ class videoboard_base {
 
         groups_print_activity_menu($this->cm, $CFG->wwwroot . '/mod/videoboard/view.php?id=' . $this->cm->id);
 
-        echo '<div class="reportlink">'.$this->submittedlink().'</div>';
+        echo '<div class="reportlink">' . $this->submittedlink() . '</div>';
         echo '<div class="clearer"></div>';
     }
 
@@ -1239,7 +1321,8 @@ class videoboard_base {
      * This will most likely be extended by videoboard type plug-ins
      * The default implementation prints the videoboard description in a box
      */
-    function view_intro() {
+    function view_intro()
+    {
         global $OUTPUT;
         echo $OUTPUT->box_start('generalbox boxaligncenter', 'intro');
         echo format_module_intro('videoboard', $this->videoboard, $this->cm->id);
@@ -1253,7 +1336,8 @@ class videoboard_base {
      * Prints the videoboard start and end dates in a box.
      * This will be suitable for most videoboard types
      */
-    function view_dates() {
+    function view_dates()
+    {
         global $OUTPUT;
         if (!$this->videoboard->timeavailable && !$this->videoboard->timedue) {
             return;
@@ -1262,12 +1346,12 @@ class videoboard_base {
         echo $OUTPUT->box_start('generalbox boxaligncenter', 'dates');
         echo '<table>';
         if ($this->videoboard->timeavailable) {
-            echo '<tr><td class="c0">'.get_string('availabledate','videoboard').':</td>';
-            echo '    <td class="c1">'.userdate($this->videoboard->timeavailable).'</td></tr>';
+            echo '<tr><td class="c0">' . get_string('availabledate', 'videoboard') . ':</td>';
+            echo '    <td class="c1">' . userdate($this->videoboard->timeavailable) . '</td></tr>';
         }
         if ($this->videoboard->timedue) {
-            echo '<tr><td class="c0">'.get_string('duedate','videoboard').':</td>';
-            echo '    <td class="c1">'.userdate($this->videoboard->timedue).'</td></tr>';
+            echo '<tr><td class="c0">' . get_string('duedate', 'videoboard') . ':</td>';
+            echo '    <td class="c1">' . userdate($this->videoboard->timedue) . '</td></tr>';
         }
         echo '</table>';
         echo $OUTPUT->box_end();
@@ -1280,7 +1364,8 @@ class videoboard_base {
      * This default method just prints the footer.
      * This will be suitable for most videoboard types
      */
-    function view_footer() {
+    function view_footer()
+    {
         global $OUTPUT;
         echo $OUTPUT->footer();
     }
@@ -1298,9 +1383,10 @@ class videoboard_base {
      * @global object
      * @param object $submission The submission object or NULL in which case it will be loaded
      */
-    function view_feedback($submission=NULL) {
+    function view_feedback($submission = NULL)
+    {
         global $USER, $CFG, $DB, $OUTPUT, $PAGE;
-        require_once($CFG->libdir.'/gradelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
         require_once("$CFG->dirroot/grade/grading/lib.php");
 
         if (!$submission) { /// Get submission for this videoboard
@@ -1334,14 +1420,14 @@ class videoboard_base {
         }
 
         $graded_date = $grade->dategraded;
-        $graded_by   = $grade->usermodified;
+        $graded_by = $grade->usermodified;
 
-    /// We need the teacher info
-        if (!$teacher = $DB->get_record('user', array('id'=>$graded_by))) {
+        /// We need the teacher info
+        if (!$teacher = $DB->get_record('user', array('id' => $graded_by))) {
             print_error('cannotfindteacher');
         }
 
-    /// Print the feedback
+        /// Print the feedback
         echo $OUTPUT->heading(get_string('feedbackfromteacher', 'videoboard', fullname($teacher)));
 
         echo '<table cellspacing="0" class="feedback">';
@@ -1355,9 +1441,9 @@ class videoboard_base {
         echo '<td class="topic">';
         echo '<div class="from">';
         if ($teacher) {
-            echo '<div class="fullname">'.fullname($teacher).'</div>';
+            echo '<div class="fullname">' . fullname($teacher) . '</div>';
         }
-        echo '<div class="time">'.userdate($graded_date).'</div>';
+        echo '<div class="time">' . userdate($graded_date) . '</div>';
         echo '</div>';
         echo '</td>';
         echo '</tr>';
@@ -1365,7 +1451,7 @@ class videoboard_base {
         echo '<tr>';
         echo '<td class="left side">&nbsp;</td>';
         echo '<td class="content">';
-        $gradestr = '<div class="grade">'. get_string("grade").': '.$grade->str_long_grade. '</div>';
+        $gradestr = '<div class="grade">' . get_string("grade") . ': ' . $grade->str_long_grade . '</div>';
         if (!empty($submission) && $controller = get_grading_manager($this->context, 'mod_videoboard', 'submission')->get_active_controller()) {
             $controller->set_grade_range(make_grades_menu($this->videoboard->grade));
             echo $controller->render_grade($PAGE, $submission->id, $item, $gradestr, has_capability('mod/videoboard:grade', $this->context));
@@ -1379,7 +1465,7 @@ class videoboard_base {
         echo '</div>';
         echo '</tr>';
 
-         if ($this->type == 'uploadsingle') { //@TODO: move to overload view_feedback method in the class or is uploadsingle merging into upload?
+        if ($this->type == 'uploadsingle') { //@TODO: move to overload view_feedback method in the class or is uploadsingle merging into upload?
             $responsefiles = $this->print_responsefiles($submission->userid, true);
             if (!empty($responsefiles)) {
                 echo '<tr>';
@@ -1388,7 +1474,7 @@ class videoboard_base {
                 echo $responsefiles;
                 echo '</tr>';
             }
-         }
+        }
 
         echo '</table>';
     }
@@ -1406,14 +1492,15 @@ class videoboard_base {
      * @param bool $allgroup print all groups info if user can access all groups, suitable for index.php
      * @return string
      */
-    function submittedlink($allgroups=false) {
+    function submittedlink($allgroups = false)
+    {
         global $USER;
         global $CFG;
 
         $submitted = '';
         $urlbase = "{$CFG->wwwroot}/mod/videoboard/";
 
-        $context = get_context_instance(CONTEXT_MODULE,$this->cm->id);
+        $context = context_module::instance($this->cm->id);
         if (has_capability('mod/videoboard:grade', $context)) {
             if ($allgroups and has_capability('moodle/site:accessallgroups', $context)) {
                 $group = 0;
@@ -1421,14 +1508,14 @@ class videoboard_base {
                 $group = groups_get_activity_group($this->cm);
             }
             if ($this->type == 'offline') {
-                $submitted = '<a href="'.$urlbase.'submissions.php?id='.$this->cm->id.'">'.
-                             get_string('viewfeedback', 'videoboard').'</a>';
+                $submitted = '<a href="' . $urlbase . 'submissions.php?id=' . $this->cm->id . '">' .
+                    get_string('viewfeedback', 'videoboard') . '</a>';
             } else if ($count = $this->count_real_submissions($group)) {
-                $submitted = '<a href="'.$urlbase.'submissions.php?id='.$this->cm->id.'">'.
-                             get_string('viewsubmissions', 'videoboard', $count).'</a>';
+                $submitted = '<a href="' . $urlbase . 'submissions.php?id=' . $this->cm->id . '">' .
+                    get_string('viewsubmissions', 'videoboard', $count) . '</a>';
             } else {
-                $submitted = '<a href="'.$urlbase.'submissions.php?id='.$this->cm->id.'">'.
-                             get_string('noattempts', 'videoboard').'</a>';
+                $submitted = '<a href="' . $urlbase . 'submissions.php?id=' . $this->cm->id . '">' .
+                    get_string('noattempts', 'videoboard') . '</a>';
             }
         } else {
             if (isloggedin()) {
@@ -1436,9 +1523,9 @@ class videoboard_base {
                     // If the submission has been completed
                     if ($this->is_submitted_with_required_data($submission)) {
                         if ($submission->timemodified <= $this->videoboard->timedue || empty($this->videoboard->timedue)) {
-                            $submitted = '<span class="early">'.userdate($submission->timemodified).'</span>';
+                            $submitted = '<span class="early">' . userdate($submission->timemodified) . '</span>';
                         } else {
-                            $submitted = '<span class="late">'.userdate($submission->timemodified).'</span>';
+                            $submitted = '<span class="late">' . userdate($submission->timemodified) . '</span>';
                         }
                     }
                 }
@@ -1452,7 +1539,8 @@ class videoboard_base {
     /**
      * @todo Document this function
      */
-    function setup_elements(&$mform) {
+    function setup_elements(&$mform)
+    {
 
     }
 
@@ -1465,7 +1553,8 @@ class videoboard_base {
      * @param object $form - the form that is to be displayed
      * @return none
      */
-    function form_data_preprocessing(&$default_values, $form) {
+    function form_data_preprocessing(&$default_values, $form)
+    {
     }
 
     /**
@@ -1474,7 +1563,8 @@ class videoboard_base {
      *
      * See lib/formslib.php, 'validation' function for details
      */
-    function form_validation($data, $files) {
+    function form_validation($data, $files)
+    {
         return array();
     }
 
@@ -1493,7 +1583,8 @@ class videoboard_base {
      * @param object $videoboard The data from the form on mod_form.php
      * @return int The id of the videoboard
      */
-    function add_instance($videoboard) {
+    function add_instance($videoboard)
+    {
         global $COURSE, $DB;
 
         $videoboard->timemodified = time();
@@ -1504,15 +1595,15 @@ class videoboard_base {
 
         if ($videoboard->timedue) {
             $event = new stdClass();
-            $event->name        = $videoboard->name;
+            $event->name = $videoboard->name;
             $event->description = format_module_intro('videoboard', $videoboard, $videoboard->coursemodule);
-            $event->courseid    = $videoboard->course;
-            $event->groupid     = 0;
-            $event->userid      = 0;
-            $event->modulename  = 'videoboard';
-            $event->instance    = $returnid;
-            $event->eventtype   = 'due';
-            $event->timestart   = $videoboard->timedue;
+            $event->courseid = $videoboard->course;
+            $event->groupid = 0;
+            $event->userid = 0;
+            $event->modulename = 'videoboard';
+            $event->instance = $returnid;
+            $event->eventtype = 'due';
+            $event->timestart = $videoboard->timedue;
             $event->timeduration = 0;
 
             calendar_event::create($event);
@@ -1533,7 +1624,8 @@ class videoboard_base {
      * @param object $videoboard The videoboard to be deleted
      * @return boolean False indicates error
      */
-    function delete_instance($videoboard) {
+    function delete_instance($videoboard)
+    {
         global $CFG, $DB;
 
         $videoboard->courseid = $videoboard->course;
@@ -1543,22 +1635,22 @@ class videoboard_base {
         // now get rid of all files
         $fs = get_file_storage();
         if ($cm = get_coursemodule_from_instance('videoboard', $videoboard->id)) {
-            $context = get_context_instance(CONTEXT_MODULE, $cm->id);
+            $context = context_module::instance($cm->id);
             $fs->delete_area_files($context->id);
         }
 
-        if (! $DB->delete_records('videoboard_submissions', array('videoboard'=>$videoboard->id))) {
+        if (!$DB->delete_records('videoboard_submissions', array('videoboard' => $videoboard->id))) {
             $result = false;
         }
 
-        if (! $DB->delete_records('event', array('modulename'=>'videoboard', 'instance'=>$videoboard->id))) {
+        if (!$DB->delete_records('event', array('modulename' => 'videoboard', 'instance' => $videoboard->id))) {
             $result = false;
         }
 
-        if (! $DB->delete_records('videoboard', array('id'=>$videoboard->id))) {
+        if (!$DB->delete_records('videoboard', array('id' => $videoboard->id))) {
             $result = false;
         }
-        $mod = $DB->get_field('modules','id',array('name'=>'videoboard'));
+        $mod = $DB->get_field('modules', 'id', array('name' => 'videoboard'));
 
         videoboard_grade_item_delete($videoboard);
 
@@ -1579,7 +1671,8 @@ class videoboard_base {
      * @param object $videoboard The data from the form on mod_form.php
      * @return bool success
      */
-    function update_instance($videoboard) {
+    function update_instance($videoboard)
+    {
         global $COURSE, $DB;
 
         $videoboard->timemodified = time();
@@ -1592,31 +1685,31 @@ class videoboard_base {
         if ($videoboard->timedue) {
             $event = new stdClass();
 
-            if ($event->id = $DB->get_field('event', 'id', array('modulename'=>'videoboard', 'instance'=>$videoboard->id))) {
+            if ($event->id = $DB->get_field('event', 'id', array('modulename' => 'videoboard', 'instance' => $videoboard->id))) {
 
-                $event->name        = $videoboard->name;
+                $event->name = $videoboard->name;
                 $event->description = format_module_intro('videoboard', $videoboard, $videoboard->coursemodule);
-                $event->timestart   = $videoboard->timedue;
+                $event->timestart = $videoboard->timedue;
 
                 $calendarevent = calendar_event::load($event->id);
                 $calendarevent->update($event);
             } else {
                 $event = new stdClass();
-                $event->name        = $videoboard->name;
+                $event->name = $videoboard->name;
                 $event->description = format_module_intro('videoboard', $videoboard, $videoboard->coursemodule);
-                $event->courseid    = $videoboard->course;
-                $event->groupid     = 0;
-                $event->userid      = 0;
-                $event->modulename  = 'videoboard';
-                $event->instance    = $videoboard->id;
-                $event->eventtype   = 'due';
-                $event->timestart   = $videoboard->timedue;
+                $event->courseid = $videoboard->course;
+                $event->groupid = 0;
+                $event->userid = 0;
+                $event->modulename = 'videoboard';
+                $event->instance = $videoboard->id;
+                $event->eventtype = 'due';
+                $event->timestart = $videoboard->timedue;
                 $event->timeduration = 0;
 
                 calendar_event::create($event);
             }
         } else {
-            $DB->delete_records('event', array('modulename'=>'videoboard', 'instance'=>$videoboard->id));
+            $DB->delete_records('event', array('modulename' => 'videoboard', 'instance' => $videoboard->id));
         }
 
         // get existing grade item
@@ -1628,7 +1721,8 @@ class videoboard_base {
     /**
      * Update grade item for this submission.
      */
-    function update_grade($submission) {
+    function update_grade($submission)
+    {
         videoboard_update_grades($this->videoboard, $submission->userid);
     }
 
@@ -1641,7 +1735,8 @@ class videoboard_base {
      * @global object
      * @param string $mode Specifies the kind of teacher interaction taking place
      */
-    function submissions($mode) {
+    function submissions($mode)
+    {
         ///The main switch is changed to facilitate
         ///1) Batch fast grading
         ///2) Skip to the next one on the popup
@@ -1653,10 +1748,10 @@ class videoboard_base {
         $mailinfo = optional_param('mailinfo', null, PARAM_BOOL);
 
         if (optional_param('next', null, PARAM_BOOL)) {
-            $mode='next';
+            $mode = 'next';
         }
         if (optional_param('saveandnext', null, PARAM_BOOL)) {
-            $mode='saveandnext';
+            $mode = 'saveandnext';
         }
 
         if (is_null($mailinfo)) {
@@ -1698,9 +1793,9 @@ class videoboard_base {
 
             case 'fastgrade':
                 ///do the fast grading stuff  - this process should work for all 3 subclasses
-                $grading    = false;
+                $grading = false;
                 $commenting = false;
-                $col        = false;
+                $col = false;
                 if (isset($_POST['submissioncomment'])) {
                     $col = 'submissioncomment';
                     $commenting = true;
@@ -1715,7 +1810,7 @@ class videoboard_base {
                     break;
                 }
 
-                foreach ($_POST[$col] as $id => $unusedvalue){
+                foreach ($_POST[$col] as $id => $unusedvalue) {
 
                     $id = (int)$id; //clean parameter name
 
@@ -1750,7 +1845,7 @@ class videoboard_base {
                         unset($submission->submissioncomment);  // Don't need to update this.
                     }
 
-                    $submission->teacher    = $USER->id;
+                    $submission->teacher = $USER->id;
                     if ($updatedb) {
                         $submission->mailed = (int)(!$mailinfo);
                     }
@@ -1760,7 +1855,7 @@ class videoboard_base {
                     //if it is not an update, we don't change the last modified time etc.
                     //this will also not write into database if no submissioncomment and grade is entered.
 
-                    if ($updatedb){
+                    if ($updatedb) {
                         if ($newsubmission) {
                             if (!isset($submission->submissioncomment)) {
                                 $submission->submissioncomment = '';
@@ -1774,10 +1869,6 @@ class videoboard_base {
                         // trigger grade event
                         $this->update_grade($submission);
 
-                        //add to log only if updating
-                        add_to_log($this->course->id, 'videoboard', 'update grades',
-                                   'submissions.php?id='.$this->cm->id.'&user='.$submission->userid,
-                                   $submission->userid, $this->cm->id);
                     }
 
                 }
@@ -1806,10 +1897,10 @@ class videoboard_base {
                 $filter = optional_param('filter', self::FILTER_ALL, PARAM_INT);
 
                 if ($mode == 'next' || $filter !== self::FILTER_REQUIRE_GRADING) {
-                    $offset = (int)$offset+1;
+                    $offset = (int)$offset + 1;
                 }
                 $redirect = new moodle_url('submissions.php',
-                        array('id' => $id, 'offset' => $offset, 'userid' => $nextid,
+                    array('id' => $id, 'offset' => $offset, 'userid' => $nextid,
                         'mode' => 'single', 'filter' => $filter));
 
                 redirect($redirect);
@@ -1833,7 +1924,8 @@ class videoboard_base {
      *
      * @return boolean
      */
-    public final function quickgrade_mode_allowed() {
+    public final function quickgrade_mode_allowed()
+    {
         global $CFG;
         require_once("$CFG->dirroot/grade/grading/lib.php");
         if ($controller = get_grading_manager($this->context, 'mod_videoboard', 'submission')->get_active_controller()) {
@@ -1849,7 +1941,8 @@ class videoboard_base {
      * @global object
      * @param $submission object The submission whose data is to be updated on the main page
      */
-    function update_main_listing($submission) {
+    function update_main_listing($submission)
+    {
         global $SESSION, $CFG, $OUTPUT;
 
         $output = '';
@@ -1859,76 +1952,78 @@ class videoboard_base {
         $quickgrade = get_user_preferences('videoboard_quickgrade', 0) && $this->quickgrade_mode_allowed();
 
         /// Run some Javascript to try and update the parent page
-        $output .= '<script type="text/javascript">'."\n<!--\n";
+        $output .= '<script type="text/javascript">' . "\n<!--\n";
         if (empty($SESSION->flextable['mod-videoboard-submissions']->collapse['submissioncomment'])) {
-            if ($quickgrade){
-                $output.= 'opener.document.getElementById("submissioncomment'.$submission->userid.'").value="'
-                .trim($submission->submissioncomment).'";'."\n";
-             } else {
-                $output.= 'opener.document.getElementById("com'.$submission->userid.
-                '").innerHTML="'.shorten_text(trim(strip_tags($submission->submissioncomment)), 15)."\";\n";
+            if ($quickgrade) {
+                $output .= 'opener.document.getElementById("submissioncomment' . $submission->userid . '").value="'
+                    . trim($submission->submissioncomment) . '";' . "\n";
+            } else {
+                $output .= 'opener.document.getElementById("com' . $submission->userid .
+                    '").innerHTML="' . shorten_text(trim(strip_tags($submission->submissioncomment)), 15) . "\";\n";
             }
         }
 
         if (empty($SESSION->flextable['mod-videoboard-submissions']->collapse['grade'])) {
             //echo optional_param('menuindex');
-            if ($quickgrade){
-                $output.= 'opener.document.getElementById("menumenu'.$submission->userid.
-                '").selectedIndex="'.optional_param('menuindex', 0, PARAM_INT).'";'."\n";
+            if ($quickgrade) {
+                $output .= 'opener.document.getElementById("menumenu' . $submission->userid .
+                    '").selectedIndex="' . optional_param('menuindex', 0, PARAM_INT) . '";' . "\n";
             } else {
-                $output.= 'opener.document.getElementById("g'.$submission->userid.'").innerHTML="'.
-                $this->display_grade($submission->grade)."\";\n";
+                $output .= 'opener.document.getElementById("g' . $submission->userid . '").innerHTML="' .
+                    $this->display_grade($submission->grade) . "\";\n";
             }
         }
         //need to add student's videoboards in there too.
         if (empty($SESSION->flextable['mod-videoboard-submissions']->collapse['timemodified']) &&
-            $submission->timemodified) {
-            $output.= 'opener.document.getElementById("ts'.$submission->userid.
-                 '").innerHTML="'.addslashes_js($this->print_student_answer($submission->userid)).userdate($submission->timemodified)."\";\n";
+            $submission->timemodified
+        ) {
+            $output .= 'opener.document.getElementById("ts' . $submission->userid .
+                '").innerHTML="' . addslashes_js($this->print_student_answer($submission->userid)) . userdate($submission->timemodified) . "\";\n";
         }
 
         if (empty($SESSION->flextable['mod-videoboard-submissions']->collapse['timemarked']) &&
-            $submission->timemarked) {
-            $output.= 'opener.document.getElementById("tt'.$submission->userid.
-                 '").innerHTML="'.userdate($submission->timemarked)."\";\n";
+            $submission->timemarked
+        ) {
+            $output .= 'opener.document.getElementById("tt' . $submission->userid .
+                '").innerHTML="' . userdate($submission->timemarked) . "\";\n";
         }
 
         if (empty($SESSION->flextable['mod-videoboard-submissions']->collapse['status'])) {
-            $output.= 'opener.document.getElementById("up'.$submission->userid.'").className="s1";';
+            $output .= 'opener.document.getElementById("up' . $submission->userid . '").className="s1";';
             $buttontext = get_string('update');
             $url = new moodle_url('/mod/videoboard/submissions.php', array(
-                    'id' => $this->cm->id,
-                    'userid' => $submission->userid,
-                    'mode' => 'single',
-                    'offset' => (optional_param('offset', '', PARAM_INT)-1)));
-            $button = $OUTPUT->action_link($url, $buttontext, new popup_action('click', $url, 'grade'.$submission->userid, array('height' => 450, 'width' => 700)), array('ttile'=>$buttontext));
+                'id' => $this->cm->id,
+                'userid' => $submission->userid,
+                'mode' => 'single',
+                'offset' => (optional_param('offset', '', PARAM_INT) - 1)));
+            $button = $OUTPUT->action_link($url, $buttontext, new popup_action('click', $url, 'grade' . $submission->userid, array('height' => 450, 'width' => 700)), array('ttile' => $buttontext));
 
-            $output .= 'opener.document.getElementById("up'.$submission->userid.'").innerHTML="'.addslashes_js($button).'";';
+            $output .= 'opener.document.getElementById("up' . $submission->userid . '").innerHTML="' . addslashes_js($button) . '";';
         }
 
         $grading_info = grade_get_grades($this->course->id, 'mod', 'videoboard', $this->videoboard->id, $submission->userid);
 
         if (empty($SESSION->flextable['mod-videoboard-submissions']->collapse['finalgrade'])) {
-            $output.= 'opener.document.getElementById("finalgrade_'.$submission->userid.
-            '").innerHTML="'.$grading_info->items[0]->grades[$submission->userid]->str_grade.'";'."\n";
+            $output .= 'opener.document.getElementById("finalgrade_' . $submission->userid .
+                '").innerHTML="' . $grading_info->items[0]->grades[$submission->userid]->str_grade . '";' . "\n";
         }
 
         if (!empty($CFG->enableoutcomes) and empty($SESSION->flextable['mod-videoboard-submissions']->collapse['outcome'])) {
 
             if (!empty($grading_info->outcomes)) {
-                foreach($grading_info->outcomes as $n=>$outcome) {
+                foreach ($grading_info->outcomes as $n => $outcome) {
                     if ($outcome->grades[$submission->userid]->locked) {
                         continue;
                     }
 
-                    if ($quickgrade){
-                        $output.= 'opener.document.getElementById("outcome_'.$n.'_'.$submission->userid.
-                        '").selectedIndex="'.$outcome->grades[$submission->userid]->grade.'";'."\n";
+                    if ($quickgrade) {
+                        $output .= 'opener.document.getElementById("outcome_' . $n . '_' . $submission->userid .
+                            '").selectedIndex="' . $outcome->grades[$submission->userid]->grade . '";' . "\n";
 
                     } else {
                         $options = make_grades_menu(-$outcome->scaleid);
                         $options[0] = get_string('nooutcome', 'grades');
-                        $output.= 'opener.document.getElementById("outcome_'.$n.'_'.$submission->userid.'").innerHTML="'.$options[$outcome->grades[$submission->userid]->grade]."\";\n";
+                        $output .= 'opener.document.getElementById("outcome_' . $n . '_' . $submission->userid . '").innerHTML="' . $options[$outcome->grades[$submission->userid]->grade] . "\";\n";
                     }
 
                 }
@@ -1946,7 +2041,8 @@ class videoboard_base {
      * @param mixed $grade
      * @return string User-friendly representation of grade
      */
-    function display_grade($grade) {
+    function display_grade($grade)
+    {
         global $DB;
 
         static $scalegrades = array();   // Cache scales for each videoboard - they might have different scales!!
@@ -1955,12 +2051,12 @@ class videoboard_base {
             if ($grade == -1) {
                 return '-';
             } else {
-                return $grade.' / '.$this->videoboard->grade;
+                return $grade . ' / ' . $this->videoboard->grade;
             }
 
         } else {                                // Scale
             if (empty($scalegrades[$this->videoboard->id])) {
-                if ($scale = $DB->get_record('scale', array('id'=>-($this->videoboard->grade)))) {
+                if ($scale = $DB->get_record('scale', array('id' => -($this->videoboard->grade)))) {
                     $scalegrades[$this->videoboard->id] = make_menu_from_list($scale->scale);
                 } else {
                     return '-';
@@ -1988,21 +2084,22 @@ class videoboard_base {
      * @global object
      * @param string $extra_javascript
      */
-    function display_submission($offset=-1,$userid =-1, $display=true) {
+    function display_submission($offset = -1, $userid = -1, $display = true)
+    {
         global $CFG, $DB, $PAGE, $OUTPUT, $USER;
-        require_once($CFG->libdir.'/gradelib.php');
-        require_once($CFG->libdir.'/tablelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
+        require_once($CFG->libdir . '/tablelib.php');
         require_once("$CFG->dirroot/repository/lib.php");
         require_once("$CFG->dirroot/grade/grading/lib.php");
-        if ($userid==-1) {
+        if ($userid == -1) {
             $userid = required_param('userid', PARAM_INT);
         }
-        if ($offset==-1) {
+        if ($offset == -1) {
             $offset = required_param('offset', PARAM_INT);//offset for where to start looking for student.
         }
         $filter = optional_param('filter', 0, PARAM_INT);
 
-        if (!$user = $DB->get_record('user', array('id'=>$userid))) {
+        if (!$user = $DB->get_record('user', array('id' => $userid))) {
             print_error('nousers');
         }
 
@@ -2018,11 +2115,11 @@ class videoboard_base {
         $grading_info = grade_get_grades($this->course->id, 'mod', 'videoboard', $this->videoboard->id, array($user->id));
         $gradingdisabled = $grading_info->items[0]->grades[$userid]->locked || $grading_info->items[0]->grades[$userid]->overridden;
 
-    /// construct SQL, using current offset to find the data of the next student
-        $course     = $this->course;
+        /// construct SQL, using current offset to find the data of the next student
+        $course = $this->course;
         $videoboard = $this->videoboard;
-        $cm         = $this->cm;
-        $context    = get_context_instance(CONTEXT_MODULE, $cm->id);
+        $cm = $this->cm;
+        $context = context_module::instance($cm->id);
 
         //reset filter to all for offline videoboard
         if ($videoboard->videoboardtype == 'offline' && $filter == self::FILTER_SUBMITTED) {
@@ -2044,9 +2141,9 @@ class videoboard_base {
 
         $nextid = 0;
         $where = '';
-        if($filter == self::FILTER_SUBMITTED) {
+        if ($filter == self::FILTER_SUBMITTED) {
             $where .= 's.timemodified > 0 AND ';
-        } else if($filter == self::FILTER_REQUIRE_GRADING) {
+        } else if ($filter == self::FILTER_REQUIRE_GRADING) {
             $where .= 's.timemarked < s.timemodified AND ';
         }
 
@@ -2058,24 +2155,24 @@ class videoboard_base {
                               CASE WHEN s.timemarked > 0 AND s.timemarked >= s.timemodified THEN 1
                                    ELSE 0 END AS status ";
 
-            $sql = 'FROM {user} u '.
-                   'LEFT JOIN {videoboard_submissions} s ON u.id = s.userid
-                   AND s.videoboard = '.$this->videoboard->id.' '.
-                   'WHERE '.$where.'u.id IN ('.implode(',', $users).') ';
+            $sql = 'FROM {user} u ' .
+                'LEFT JOIN {videoboard_submissions} s ON u.id = s.userid
+                   AND s.videoboard = ' . $this->videoboard->id . ' ' .
+                'WHERE ' . $where . 'u.id IN (' . implode(',', $users) . ') ';
 
             if ($sort = flexible_table::get_sort_for_table('mod-videoboard-submissions')) {
-                $sort = 'ORDER BY '.$sort.' ';
+                $sort = 'ORDER BY ' . $sort . ' ';
             }
-            $auser = $DB->get_records_sql($select.$sql.$sort, null, $offset, 2);
+            $auser = $DB->get_records_sql($select . $sql . $sort, null, $offset, 2);
 
-            if (is_array($auser) && count($auser)>1) {
+            if (is_array($auser) && count($auser) > 1) {
                 $nextuser = next($auser);
                 $nextid = $nextuser->id;
             }
         }
 
         if ($submission->teacher) {
-            $teacher = $DB->get_record('user', array('id'=>$submission->teacher));
+            $teacher = $DB->get_record('user', array('id' => $submission->teacher));
         } else {
             global $USER;
             $teacher = $USER;
@@ -2101,15 +2198,15 @@ class videoboard_base {
         $mformdata->grade = $this->videoboard->grade;
         $mformdata->gradingdisabled = $gradingdisabled;
         $mformdata->nextid = $nextid;
-        $mformdata->submissioncomment= $submission->submissioncomment;
-        $mformdata->submissioncommentformat= FORMAT_HTML;
-        $mformdata->submission_content= $this->print_user_files($user->id,true);
+        $mformdata->submissioncomment = $submission->submissioncomment;
+        $mformdata->submissioncommentformat = FORMAT_HTML;
+        $mformdata->submission_content = $this->print_user_files($user->id, true);
         $mformdata->filter = $filter;
         $mformdata->mailinfo = get_user_preferences('videoboard_mailinfo', 0);
-         if ($videoboard->videoboardtype == 'upload') {
-            $mformdata->fileui_options = array('subdirs'=>1, 'maxbytes'=>$videoboard->maxbytes, 'maxfiles'=>$videoboard->var1, 'accepted_types'=>'*', 'return_types'=>FILE_INTERNAL);
+        if ($videoboard->videoboardtype == 'upload') {
+            $mformdata->fileui_options = array('subdirs' => 1, 'maxbytes' => $videoboard->maxbytes, 'maxfiles' => $videoboard->var1, 'accepted_types' => '*', 'return_types' => FILE_INTERNAL);
         } elseif ($videoboard->videoboardtype == 'uploadsingle') {
-            $mformdata->fileui_options = array('subdirs'=>0, 'maxbytes'=>$CFG->userquota, 'maxfiles'=>1, 'accepted_types'=>'*', 'return_types'=>FILE_INTERNAL);
+            $mformdata->fileui_options = array('subdirs' => 0, 'maxbytes' => $CFG->userquota, 'maxfiles' => 1, 'accepted_types' => '*', 'return_types' => FILE_INTERNAL);
         }
         $advancedgradingwarning = false;
         $gradingmanager = get_grading_manager($this->context, 'mod_videoboard', 'submission');
@@ -2131,9 +2228,9 @@ class videoboard_base {
             }
         }
 
-        $submitform = new mod_videoboard_grading_form( null, $mformdata );
+        $submitform = new mod_videoboard_grading_form(null, $mformdata);
 
-         if (!$display) {
+        if (!$display) {
             $ret_data = new stdClass();
             $ret_data->mform = $submitform;
             if (isset($mformdata->fileui_options)) {
@@ -2143,18 +2240,18 @@ class videoboard_base {
         }
 
         if ($submitform->is_cancelled()) {
-            redirect('submissions.php?id='.$this->cm->id);
+            redirect('submissions.php?id=' . $this->cm->id);
         }
 
         $submitform->set_data($mformdata);
 
-        $PAGE->set_title($this->course->fullname . ': ' .get_string('feedback', 'videoboard').' - '.fullname($user, true));
+        $PAGE->set_title($this->course->fullname . ': ' . get_string('feedback', 'videoboard') . ' - ' . fullname($user, true));
         $PAGE->set_heading($this->course->fullname);
-        $PAGE->navbar->add(get_string('submissions', 'videoboard'), new moodle_url('/mod/videoboard/submissions.php', array('id'=>$cm->id)));
+        $PAGE->navbar->add(get_string('submissions', 'videoboard'), new moodle_url('/mod/videoboard/submissions.php', array('id' => $cm->id)));
         $PAGE->navbar->add(fullname($user, true));
 
         echo $OUTPUT->header();
-        echo $OUTPUT->heading(get_string('feedback', 'videoboard').': '.fullname($user, true));
+        echo $OUTPUT->heading(get_string('feedback', 'videoboard') . ': ' . fullname($user, true));
 
         // display mform here...
         if ($advancedgradingwarning) {
@@ -2178,7 +2275,8 @@ class videoboard_base {
      *
      * @param object $submission The submission object
      */
-    function preprocess_submission(&$submission) {
+    function preprocess_submission(&$submission)
+    {
     }
 
     /**
@@ -2191,21 +2289,22 @@ class videoboard_base {
      * @param string $message
      * @return bool|void
      */
-    function display_submissions($message='') {
+    function display_submissions($message = '')
+    {
         global $CFG, $DB, $USER, $DB, $OUTPUT, $PAGE;
-        require_once($CFG->libdir.'/gradelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
 
         /* first we check to see if the form has just been submitted
          * to request user_preference updates
          */
 
-       $filters = array(self::FILTER_ALL             => get_string('all'),
-                        self::FILTER_REQUIRE_GRADING => get_string('requiregrading', 'videoboard'));
+        $filters = array(self::FILTER_ALL => get_string('all'),
+            self::FILTER_REQUIRE_GRADING => get_string('requiregrading', 'videoboard'));
 
         $updatepref = optional_param('updatepref', 0, PARAM_BOOL);
         if ($updatepref) {
             $perpage = optional_param('perpage', 10, PARAM_INT);
-            $perpage = ($perpage <= 0) ? 10 : $perpage ;
+            $perpage = ($perpage <= 0) ? 10 : $perpage;
             $filter = optional_param('filter', 0, PARAM_INT);
             set_user_preference('videoboard_perpage', $perpage);
             set_user_preference('videoboard_quickgrade', optional_param('quickgrade', 0, PARAM_BOOL));
@@ -2215,7 +2314,7 @@ class videoboard_base {
         /* next we get perpage and quickgrade (allow quick grade) params
          * from database
          */
-        $perpage    = get_user_preferences('videoboard_perpage', 10);
+        $perpage = get_user_preferences('videoboard_perpage', 10);
         $quickgrade = get_user_preferences('videoboard_quickgrade', 0) && $this->quickgrade_mode_allowed();
         $filter = get_user_preferences('videoboard_filter', 0);
         $grading_info = grade_get_grades($this->course->id, 'mod', 'videoboard', $this->videoboard->id);
@@ -2226,14 +2325,14 @@ class videoboard_base {
             $uses_outcomes = false;
         }
 
-        $page    = optional_param('page', 0, PARAM_INT);
+        $page = optional_param('page', 0, PARAM_INT);
         $strsaveallfeedback = get_string('saveallfeedback', 'videoboard');
 
-    /// Some shortcuts to make the code read better
+        /// Some shortcuts to make the code read better
 
-        $course     = $this->course;
+        $course = $this->course;
         $videoboard = $this->videoboard;
-        $cm         = $this->cm;
+        $cm = $this->cm;
         $hassubmission = false;
 
         // reset filter to all for offline videoboard only.
@@ -2246,9 +2345,8 @@ class videoboard_base {
         }
 
         $tabindex = 1; //tabindex for quick grading tabbing; Not working for dropdowns yet
-        add_to_log($course->id, 'videoboard', 'view submission', 'submissions.php?id='.$this->cm->id, $this->videoboard->id, $this->cm->id);
 
-        $PAGE->set_title(format_string($this->videoboard->name,true));
+        $PAGE->set_title(format_string($this->videoboard->name, true));
         $PAGE->set_heading($this->course->fullname);
         echo $OUTPUT->header();
 
@@ -2257,7 +2355,7 @@ class videoboard_base {
         //hook to allow plagiarism plugins to update status/print links.
         echo plagiarism_update_status($this->course, $this->cm);
 
-        $course_context = get_context_instance(CONTEXT_COURSE, $course->id);
+        $course_context = context_course::instance($course->id);
         if (has_capability('gradereport/grader:view', $course_context) && has_capability('moodle/grade:viewall', $course_context)) {
             echo '<div class="allcoursegrades"><a href="' . $CFG->wwwroot . '/grade/report/grader/index.php?id=' . $course->id . '">'
                 . get_string('seeallcoursegrades', 'grades') . '</a></div>';
@@ -2267,9 +2365,9 @@ class videoboard_base {
             echo $message;   // display messages here if any
         }
 
-        $context = get_context_instance(CONTEXT_MODULE, $cm->id);
+        $context = context_module::instance($cm->id);
 
-    /// Check to see if groups are being used in this videoboard
+        /// Check to see if groups are being used in this videoboard
 
         /// find out current groups mode
         $groupmode = groups_get_activity_groupmode($cm);
@@ -2284,41 +2382,41 @@ class videoboard_base {
             $formattrs['method'] = 'post';
 
             echo html_writer::start_tag('form', $formattrs);
-            echo html_writer::empty_tag('input', array('type'=>'hidden', 'name'=>'id',      'value'=> $this->cm->id));
-            echo html_writer::empty_tag('input', array('type'=>'hidden', 'name'=>'mode',    'value'=> 'fastgrade'));
-            echo html_writer::empty_tag('input', array('type'=>'hidden', 'name'=>'page',    'value'=> $page));
-            echo html_writer::empty_tag('input', array('type'=>'hidden', 'name'=>'sesskey', 'value'=> sesskey()));
+            echo html_writer::empty_tag('input', array('type' => 'hidden', 'name' => 'id', 'value' => $this->cm->id));
+            echo html_writer::empty_tag('input', array('type' => 'hidden', 'name' => 'mode', 'value' => 'fastgrade'));
+            echo html_writer::empty_tag('input', array('type' => 'hidden', 'name' => 'page', 'value' => $page));
+            echo html_writer::empty_tag('input', array('type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()));
         }
 
         /// Get all ppl that are allowed to submit videoboards
         list($esql, $params) = get_enrolled_sql($context, 'mod/videoboard:submit', $currentgroup);
 
         if ($filter == self::FILTER_ALL) {
-            $sql = "SELECT u.id FROM {user} u ".
-                   "LEFT JOIN ($esql) eu ON eu.id=u.id ".
-                   "WHERE u.deleted = 0 AND eu.id=u.id ";
+            $sql = "SELECT u.id FROM {user} u " .
+                "LEFT JOIN ($esql) eu ON eu.id=u.id " .
+                "WHERE u.deleted = 0 AND eu.id=u.id ";
         } else {
-            $wherefilter = ' AND s.videoboard = '. $this->videoboard->id;
+            $wherefilter = ' AND s.videoboard = ' . $this->videoboard->id;
             $videoboardsubmission = "LEFT JOIN {videoboard_submissions} s ON (u.id = s.userid) ";
-            if($filter == self::FILTER_SUBMITTED) {
+            if ($filter == self::FILTER_SUBMITTED) {
                 $wherefilter .= ' AND s.timemodified > 0 ';
-            } else if($filter == self::FILTER_REQUIRE_GRADING && $videoboard->videoboardtype != 'offline') {
+            } else if ($filter == self::FILTER_REQUIRE_GRADING && $videoboard->videoboardtype != 'offline') {
                 $wherefilter .= ' AND s.timemarked < s.timemodified ';
             } else { // require grading for offline videoboard
                 $videoboardsubmission = "";
                 $wherefilter = "";
             }
 
-            $sql = "SELECT u.id FROM {user} u ".
-                   "LEFT JOIN ($esql) eu ON eu.id=u.id ".
-                   $videoboardsubmission.
-                   "WHERE u.deleted = 0 AND eu.id=u.id ".
-                   $wherefilter;
+            $sql = "SELECT u.id FROM {user} u " .
+                "LEFT JOIN ($esql) eu ON eu.id=u.id " .
+                $videoboardsubmission .
+                "WHERE u.deleted = 0 AND eu.id=u.id " .
+                $wherefilter;
         }
 
         $users = $DB->get_records_sql($sql, $params);
         if (!empty($users)) {
-            if($videoboard->videoboardtype == 'offline' && $filter == self::FILTER_REQUIRE_GRADING) {
+            if ($videoboard->videoboardtype == 'offline' && $filter == self::FILTER_REQUIRE_GRADING) {
                 //remove users who has submitted their videoboard
                 foreach ($this->get_submissions() as $submission) {
                     if (array_key_exists($submission->userid, $users)) {
@@ -2338,7 +2436,7 @@ class videoboard_base {
 
         $extrafields = get_extra_user_fields($context);
         $tablecolumns = array_merge(array('picture', 'fullname'), $extrafields,
-                array('grade', 'submissioncomment', 'timemodified', 'timemarked', 'status', 'finalgrade'));
+            array('grade', 'submissioncomment', 'timemodified', 'timemarked', 'status', 'finalgrade'));
         if ($uses_outcomes) {
             $tablecolumns[] = 'outcome'; // no sorting based on outcomes column
         }
@@ -2348,26 +2446,26 @@ class videoboard_base {
             $extrafieldnames[] = get_user_field_name($field);
         }
         $tableheaders = array_merge(
-                array('', get_string('fullnameuser')),
-                $extrafieldnames,
-                array(
-                    get_string('grade'),
-                    get_string('comment', 'videoboard'),
-                    get_string('lastmodified').' ('.get_string('submission', 'videoboard').')',
-                    get_string('lastmodified').' ('.get_string('grade').')',
-                    get_string('status'),
-                    get_string('finalgrade', 'grades'),
-                ));
+            array('', get_string('fullnameuser')),
+            $extrafieldnames,
+            array(
+                get_string('grade'),
+                get_string('comment', 'videoboard'),
+                get_string('lastmodified') . ' (' . get_string('submission', 'videoboard') . ')',
+                get_string('lastmodified') . ' (' . get_string('grade') . ')',
+                get_string('status'),
+                get_string('finalgrade', 'grades'),
+            ));
         if ($uses_outcomes) {
             $tableheaders[] = get_string('outcome', 'grades');
         }
 
-        require_once($CFG->libdir.'/tablelib.php');
+        require_once($CFG->libdir . '/tablelib.php');
         $table = new flexible_table('mod-videoboard-submissions');
 
         $table->define_columns($tablecolumns);
         $table->define_headers($tableheaders);
-        $table->define_baseurl($CFG->wwwroot.'/mod/videoboard/submissions.php?id='.$this->cm->id.'&amp;currentgroup='.$currentgroup);
+        $table->define_baseurl($CFG->wwwroot . '/mod/videoboard/submissions.php?id=' . $this->cm->id . '&amp;currentgroup=' . $currentgroup);
 
         $table->sortable(true, 'lastname');//sorted by lastname by default
         $table->collapsible(true);
@@ -2409,16 +2507,16 @@ class videoboard_base {
         }
 
         if ($filter == self::FILTER_SUBMITTED) {
-           $where .= 's.timemodified > 0 AND ';
-        } else if($filter == self::FILTER_REQUIRE_GRADING) {
+            $where .= 's.timemodified > 0 AND ';
+        } else if ($filter == self::FILTER_REQUIRE_GRADING) {
             $where = '';
             if ($videoboard->videoboardtype != 'offline') {
-               $where .= 's.timemarked < s.timemodified AND ';
+                $where .= 's.timemarked < s.timemodified AND ';
             }
         }
 
         if ($sort = $table->get_sql_sort()) {
-            $sort = ' ORDER BY '.$sort;
+            $sort = ' ORDER BY ' . $sort;
         }
 
         $ufields = user_picture::fields('u', $extrafields);
@@ -2429,20 +2527,20 @@ class videoboard_base {
                               CASE WHEN s.timemarked > 0 AND s.timemarked >= s.timemodified THEN 1
                                    ELSE 0 END AS status ";
 
-            $sql = 'FROM {user} u '.
-                   'LEFT JOIN {videoboard_submissions} s ON u.id = s.userid
-                    AND s.videoboard = '.$this->videoboard->id.' '.
-                   'WHERE '.$where.'u.id IN ('.implode(',',$users).') ';
+            $sql = 'FROM {user} u ' .
+                'LEFT JOIN {videoboard_submissions} s ON u.id = s.userid
+                    AND s.videoboard = ' . $this->videoboard->id . ' ' .
+                'WHERE ' . $where . 'u.id IN (' . implode(',', $users) . ') ';
 
-            $ausers = $DB->get_records_sql($select.$sql.$sort, $params, $table->get_page_start(), $table->get_page_size());
+            $ausers = $DB->get_records_sql($select . $sql . $sort, $params, $table->get_page_start(), $table->get_page_size());
 
             $table->pagesize($perpage, count($users));
 
             ///offset used to calculate index of student in that particular query, needed for the pop up to know who's next
             $offset = $page * $perpage;
             $strupdate = get_string('update');
-            $strgrade  = get_string('grade');
-            $strview  = get_string('view');
+            $strgrade = get_string('grade');
+            $strview = get_string('view');
             $grademenu = make_grades_menu($this->videoboard->grade);
 
             if ($ausers !== false) {
@@ -2454,7 +2552,7 @@ class videoboard_base {
                         $rowclass = null;
                         $final_grade = $grading_info->items[0]->grades[$auser->id];
                         $grademax = $grading_info->items[0]->grademax;
-                        $final_grade->formatted_grade = round($final_grade->grade,2) .' / ' . round($grademax,2);
+                        $final_grade->formatted_grade = round($final_grade->grade, 2) . ' / ' . round($grademax, 2);
                         $locked_overridden = 'locked';
                         if ($final_grade->overridden) {
                             $locked_overridden = 'overridden';
@@ -2470,12 +2568,12 @@ class videoboard_base {
 
                         if (!empty($auser->submissionid)) {
                             $hassubmission = true;
-                        ///Prints student answer and student modified date
-                        ///attach file or print link to student answer, depending on the type of the videoboard.
-                        ///Refer to print_student_answer in inherited classes.
+                            ///Prints student answer and student modified date
+                            ///attach file or print link to student answer, depending on the type of the videoboard.
+                            ///Refer to print_student_answer in inherited classes.
                             if ($auser->timemodified > 0) {
                                 $studentmodifiedcontent = $this->print_student_answer($auser->id)
-                                        . userdate($auser->timemodified);
+                                    . userdate($auser->timemodified);
                                 if ($videoboard->timedue && $auser->timemodified > $videoboard->timedue) {
                                     $studentmodifiedcontent .= videoboard_display_lateness($auser->timemodified, $videoboard->timedue);
                                     $rowclass = 'late';
@@ -2484,71 +2582,71 @@ class videoboard_base {
                                 $studentmodifiedcontent = '&nbsp;';
                             }
                             $studentmodified = html_writer::tag('div', $studentmodifiedcontent, array('id' => 'ts' . $auser->id));
-                        ///Print grade, dropdown or text
+                            ///Print grade, dropdown or text
                             if ($auser->timemarked > 0) {
-                                $teachermodified = '<div id="tt'.$auser->id.'">'.userdate($auser->timemarked).'</div>';
+                                $teachermodified = '<div id="tt' . $auser->id . '">' . userdate($auser->timemarked) . '</div>';
 
                                 if ($final_grade->locked or $final_grade->overridden) {
-                                    $grade = '<div id="g'.$auser->id.'" class="'. $locked_overridden .'">'.$final_grade->formatted_grade.'</div>';
+                                    $grade = '<div id="g' . $auser->id . '" class="' . $locked_overridden . '">' . $final_grade->formatted_grade . '</div>';
                                 } else if ($quickgrade) {
                                     $attributes = array();
                                     $attributes['tabindex'] = $tabindex++;
-                                    $menu = html_writer::select(make_grades_menu($this->videoboard->grade), 'menu['.$auser->id.']', $auser->grade, array(-1=>get_string('nograde')), $attributes);
-                                    $grade = '<div id="g'.$auser->id.'">'. $menu .'</div>';
+                                    $menu = html_writer::select(make_grades_menu($this->videoboard->grade), 'menu[' . $auser->id . ']', $auser->grade, array(-1 => get_string('nograde')), $attributes);
+                                    $grade = '<div id="g' . $auser->id . '">' . $menu . '</div>';
                                 } else {
-                                    $grade = '<div id="g'.$auser->id.'">'.$this->display_grade($auser->grade).'</div>';
+                                    $grade = '<div id="g' . $auser->id . '">' . $this->display_grade($auser->grade) . '</div>';
                                 }
 
                             } else {
-                                $teachermodified = '<div id="tt'.$auser->id.'">&nbsp;</div>';
+                                $teachermodified = '<div id="tt' . $auser->id . '">&nbsp;</div>';
                                 if ($final_grade->locked or $final_grade->overridden) {
-                                    $grade = '<div id="g'.$auser->id.'" class="'. $locked_overridden .'">'.$final_grade->formatted_grade.'</div>';
+                                    $grade = '<div id="g' . $auser->id . '" class="' . $locked_overridden . '">' . $final_grade->formatted_grade . '</div>';
                                 } else if ($quickgrade) {
                                     $attributes = array();
                                     $attributes['tabindex'] = $tabindex++;
-                                    $menu = html_writer::select(make_grades_menu($this->videoboard->grade), 'menu['.$auser->id.']', $auser->grade, array(-1=>get_string('nograde')), $attributes);
-                                    $grade = '<div id="g'.$auser->id.'">'.$menu.'</div>';
+                                    $menu = html_writer::select(make_grades_menu($this->videoboard->grade), 'menu[' . $auser->id . ']', $auser->grade, array(-1 => get_string('nograde')), $attributes);
+                                    $grade = '<div id="g' . $auser->id . '">' . $menu . '</div>';
                                 } else {
-                                    $grade = '<div id="g'.$auser->id.'">'.$this->display_grade($auser->grade).'</div>';
+                                    $grade = '<div id="g' . $auser->id . '">' . $this->display_grade($auser->grade) . '</div>';
                                 }
                             }
-                        ///Print Comment
+                            ///Print Comment
                             if ($final_grade->locked or $final_grade->overridden) {
-                                $comment = '<div id="com'.$auser->id.'">'.shorten_text(strip_tags($final_grade->str_feedback),15).'</div>';
+                                $comment = '<div id="com' . $auser->id . '">' . shorten_text(strip_tags($final_grade->str_feedback), 15) . '</div>';
 
                             } else if ($quickgrade) {
-                                $comment = '<div id="com'.$auser->id.'">'
-                                         . '<textarea tabindex="'.$tabindex++.'" name="submissioncomment['.$auser->id.']" id="submissioncomment'
-                                         . $auser->id.'" rows="2" cols="20">'.($auser->submissioncomment).'</textarea></div>';
+                                $comment = '<div id="com' . $auser->id . '">'
+                                    . '<textarea tabindex="' . $tabindex++ . '" name="submissioncomment[' . $auser->id . ']" id="submissioncomment'
+                                    . $auser->id . '" rows="2" cols="20">' . ($auser->submissioncomment) . '</textarea></div>';
                             } else {
-                                $comment = '<div id="com'.$auser->id.'">'.shorten_text(strip_tags($auser->submissioncomment),15).'</div>';
+                                $comment = '<div id="com' . $auser->id . '">' . shorten_text(strip_tags($auser->submissioncomment), 15) . '</div>';
                             }
                         } else {
-                            $studentmodified = '<div id="ts'.$auser->id.'">&nbsp;</div>';
-                            $teachermodified = '<div id="tt'.$auser->id.'">&nbsp;</div>';
-                            $status          = '<div id="st'.$auser->id.'">&nbsp;</div>';
+                            $studentmodified = '<div id="ts' . $auser->id . '">&nbsp;</div>';
+                            $teachermodified = '<div id="tt' . $auser->id . '">&nbsp;</div>';
+                            $status = '<div id="st' . $auser->id . '">&nbsp;</div>';
 
                             if ($final_grade->locked or $final_grade->overridden) {
-                                $grade = '<div id="g'.$auser->id.'">'.$final_grade->formatted_grade . '</div>';
+                                $grade = '<div id="g' . $auser->id . '">' . $final_grade->formatted_grade . '</div>';
                                 $hassubmission = true;
                             } else if ($quickgrade) {   // allow editing
                                 $attributes = array();
                                 $attributes['tabindex'] = $tabindex++;
-                                $menu = html_writer::select(make_grades_menu($this->videoboard->grade), 'menu['.$auser->id.']', $auser->grade, array(-1=>get_string('nograde')), $attributes);
-                                $grade = '<div id="g'.$auser->id.'">'.$menu.'</div>';
+                                $menu = html_writer::select(make_grades_menu($this->videoboard->grade), 'menu[' . $auser->id . ']', $auser->grade, array(-1 => get_string('nograde')), $attributes);
+                                $grade = '<div id="g' . $auser->id . '">' . $menu . '</div>';
                                 $hassubmission = true;
                             } else {
-                                $grade = '<div id="g'.$auser->id.'">-</div>';
+                                $grade = '<div id="g' . $auser->id . '">-</div>';
                             }
 
                             if ($final_grade->locked or $final_grade->overridden) {
-                                $comment = '<div id="com'.$auser->id.'">'.$final_grade->str_feedback.'</div>';
+                                $comment = '<div id="com' . $auser->id . '">' . $final_grade->str_feedback . '</div>';
                             } else if ($quickgrade) {
-                                $comment = '<div id="com'.$auser->id.'">'
-                                         . '<textarea tabindex="'.$tabindex++.'" name="submissioncomment['.$auser->id.']" id="submissioncomment'
-                                         . $auser->id.'" rows="2" cols="20">'.($auser->submissioncomment).'</textarea></div>';
+                                $comment = '<div id="com' . $auser->id . '">'
+                                    . '<textarea tabindex="' . $tabindex++ . '" name="submissioncomment[' . $auser->id . ']" id="submissioncomment'
+                                    . $auser->id . '" rows="2" cols="20">' . ($auser->submissioncomment) . '</textarea></div>';
                             } else {
-                                $comment = '<div id="com'.$auser->id.'">&nbsp;</div>';
+                                $comment = '<div id="com' . $auser->id . '">&nbsp;</div>';
                             }
                         }
 
@@ -2564,31 +2662,31 @@ class videoboard_base {
                         }
 
                         ///No more buttons, we use popups ;-).
-                        $popup_url = '/mod/videoboard/submissions.php?id='.$this->cm->id
-                                   . '&amp;userid='.$auser->id.'&amp;mode=single'.'&amp;filter='.$filter.'&amp;offset='.$offset++;
+                        $popup_url = '/mod/videoboard/submissions.php?id=' . $this->cm->id
+                            . '&amp;userid=' . $auser->id . '&amp;mode=single' . '&amp;filter=' . $filter . '&amp;offset=' . $offset++;
 
                         $button = $OUTPUT->action_link($popup_url, $buttontext);
 
-                        $status  = '<div id="up'.$auser->id.'" class="s'.$auser->status.'">'.$button.'</div>';
+                        $status = '<div id="up' . $auser->id . '" class="s' . $auser->status . '">' . $button . '</div>';
 
-                        $finalgrade = '<span id="finalgrade_'.$auser->id.'">'.$final_grade->str_grade.'</span>';
+                        $finalgrade = '<span id="finalgrade_' . $auser->id . '">' . $final_grade->str_grade . '</span>';
 
                         $outcomes = '';
 
                         if ($uses_outcomes) {
 
-                            foreach($grading_info->outcomes as $n=>$outcome) {
-                                $outcomes .= '<div class="outcome"><label>'.$outcome->name.'</label>';
+                            foreach ($grading_info->outcomes as $n => $outcome) {
+                                $outcomes .= '<div class="outcome"><label>' . $outcome->name . '</label>';
                                 $options = make_grades_menu(-$outcome->scaleid);
 
                                 if ($outcome->grades[$auser->id]->locked or !$quickgrade) {
                                     $options[0] = get_string('nooutcome', 'grades');
-                                    $outcomes .= ': <span id="outcome_'.$n.'_'.$auser->id.'">'.$options[$outcome->grades[$auser->id]->grade].'</span>';
+                                    $outcomes .= ': <span id="outcome_' . $n . '_' . $auser->id . '">' . $options[$outcome->grades[$auser->id]->grade] . '</span>';
                                 } else {
                                     $attributes = array();
                                     $attributes['tabindex'] = $tabindex++;
-                                    $attributes['id'] = 'outcome_'.$n.'_'.$auser->id;
-                                    $outcomes .= ' '.html_writer::select($options, 'outcome_'.$n.'['.$auser->id.']', $outcome->grades[$auser->id]->grade, array(0=>get_string('nooutcome', 'grades')), $attributes);
+                                    $attributes['id'] = 'outcome_' . $n . '_' . $auser->id;
+                                    $outcomes .= ' ' . html_writer::select($options, 'outcome_' . $n . '[' . $auser->id . ']', $outcome->grades[$auser->id]->grade, array(0 => get_string('nooutcome', 'grades')), $attributes);
                                 }
                                 $outcomes .= '</div>';
                             }
@@ -2600,7 +2698,7 @@ class videoboard_base {
                             $extradata[] = $auser->{$field};
                         }
                         $row = array_merge(array($picture, $userlink), $extradata,
-                                array($grade, $comment, $studentmodified, $teachermodified,
+                            array($grade, $comment, $studentmodified, $teachermodified,
                                 $status, $finalgrade));
                         if ($uses_outcomes) {
                             $row[] = $outcomes;
@@ -2609,7 +2707,7 @@ class videoboard_base {
                     }
                     $currentposition++;
                 }
-                if ($hassubmission && ($this->videoboard->videoboardtype=='upload' || $this->videoboard->videoboardtype=='online' || $this->videoboard->videoboardtype=='uploadsingle')) { //TODO: this is an ugly hack, where is the plugin spirit? (skodak)
+                if ($hassubmission && ($this->videoboard->videoboardtype == 'upload' || $this->videoboard->videoboardtype == 'online' || $this->videoboard->videoboardtype == 'uploadsingle')) { //TODO: this is an ugly hack, where is the plugin spirit? (skodak)
                     echo html_writer::start_tag('div', array('class' => 'mod-videoboard-download-link'));
                     echo html_writer::link(new moodle_url('/mod/videoboard/submissions.php', array('id' => $this->cm->id, 'download' => 'zip')), get_string('downloadall', 'videoboard'));
                     echo html_writer::end_tag('div');
@@ -2617,26 +2715,26 @@ class videoboard_base {
                 $table->print_html();  /// Print the whole table
             } else {
                 if ($filter == self::FILTER_SUBMITTED) {
-                    echo html_writer::tag('div', get_string('nosubmisson', 'videoboard'), array('class'=>'nosubmisson'));
+                    echo html_writer::tag('div', get_string('nosubmisson', 'videoboard'), array('class' => 'nosubmisson'));
                 } else if ($filter == self::FILTER_REQUIRE_GRADING) {
-                    echo html_writer::tag('div', get_string('norequiregrading', 'videoboard'), array('class'=>'norequiregrading'));
+                    echo html_writer::tag('div', get_string('norequiregrading', 'videoboard'), array('class' => 'norequiregrading'));
                 }
             }
         }
 
         /// Print quickgrade form around the table
-        if ($quickgrade && $table->started_output && !empty($users)){
+        if ($quickgrade && $table->started_output && !empty($users)) {
             $mailinfopref = false;
             if (get_user_preferences('videoboard_mailinfo', 1)) {
                 $mailinfopref = true;
             }
-            $emailnotification =  html_writer::checkbox('mailinfo', 1, $mailinfopref, get_string('enablenotification','videoboard'));
+            $emailnotification = html_writer::checkbox('mailinfo', 1, $mailinfopref, get_string('enablenotification', 'videoboard'));
 
             $emailnotification .= $OUTPUT->help_icon('enablenotification', 'videoboard');
-            echo html_writer::tag('div', $emailnotification, array('class'=>'emailnotification'));
+            echo html_writer::tag('div', $emailnotification, array('class' => 'emailnotification'));
 
-            $savefeedback = html_writer::empty_tag('input', array('type'=>'submit', 'name'=>'fastg', 'value'=>get_string('saveallfeedback', 'videoboard')));
-            echo html_writer::tag('div', $savefeedback, array('class'=>'fastgbutton'));
+            $savefeedback = html_writer::empty_tag('input', array('type' => 'submit', 'name' => 'fastg', 'value' => get_string('saveallfeedback', 'videoboard')));
+            echo html_writer::tag('div', $savefeedback, array('class' => 'fastgbutton'));
 
             echo html_writer::end_tag('form');
         } else if ($quickgrade) {
@@ -2648,21 +2746,21 @@ class videoboard_base {
 
         /// Mini form for setting user preference
 
-        $formaction = new moodle_url('/mod/videoboard/submissions.php', array('id'=>$this->cm->id));
-        $mform = new MoodleQuickForm('optionspref', 'post', $formaction, '', array('class'=>'optionspref'));
+        $formaction = new moodle_url('/mod/videoboard/submissions.php', array('id' => $this->cm->id));
+        $mform = new MoodleQuickForm('optionspref', 'post', $formaction, '', array('class' => 'optionspref'));
 
         $mform->addElement('hidden', 'updatepref');
         $mform->setDefault('updatepref', 1);
         $mform->addElement('header', 'qgprefs', get_string('optionalsettings', 'videoboard'));
-        $mform->addElement('select', 'filter', get_string('show'),  $filters);
+        $mform->addElement('select', 'filter', get_string('show'), $filters);
 
         $mform->setDefault('filter', $filter);
 
-        $mform->addElement('text', 'perpage', get_string('pagesize', 'videoboard'), array('size'=>1));
+        $mform->addElement('text', 'perpage', get_string('pagesize', 'videoboard'), array('size' => 1));
         $mform->setDefault('perpage', $perpage);
 
         if ($this->quickgrade_mode_allowed()) {
-            $mform->addElement('checkbox', 'quickgrade', get_string('quickgrade','videoboard'));
+            $mform->addElement('checkbox', 'quickgrade', get_string('quickgrade', 'videoboard'));
             $mform->setDefault('quickgrade', $quickgrade);
             $mform->addHelpButton('quickgrade', 'quickgrade', 'videoboard');
         }
@@ -2689,9 +2787,10 @@ class videoboard_base {
      * of the form gets the data not from form->get_data(), but from $_POST (using statement
      * like  $feedback = data_submitted() )
      */
-    protected function validate_and_preprocess_feedback() {
+    protected function validate_and_preprocess_feedback()
+    {
         global $USER, $CFG;
-        require_once($CFG->libdir.'/gradelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
         if (!($feedback = data_submitted()) || !isset($feedback->userid) || !isset($feedback->offset)) {
             return true;      // No incoming data, nothing to validate
         }
@@ -2737,9 +2836,10 @@ class videoboard_base {
      * @global object
      * @return object|bool The updated submission object or false
      */
-    function process_feedback($formdata=null) {
+    function process_feedback($formdata = null)
+    {
         global $CFG, $USER, $DB;
-        require_once($CFG->libdir.'/gradelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
 
         if (!$feedback = data_submitted() or !confirm_sesskey()) {      // No incoming data?
             return false;
@@ -2748,7 +2848,7 @@ class videoboard_base {
         ///For save and next, we need to know the userid to save, and the userid to go
         ///We use a new hidden field in the form, and set it to -1. If it's set, we use this
         ///as the userid to store
-        if ((int)$feedback->saveuserid !== -1){
+        if ((int)$feedback->saveuserid !== -1) {
             $feedback->userid = $feedback->saveuserid;
         }
 
@@ -2764,11 +2864,12 @@ class videoboard_base {
         $submission = $this->get_submission($feedback->userid, true);  // Get or make one
 
         if (!($grading_info->items[0]->grades[$feedback->userid]->locked ||
-            $grading_info->items[0]->grades[$feedback->userid]->overridden) ) {
+            $grading_info->items[0]->grades[$feedback->userid]->overridden)
+        ) {
 
-            $submission->grade      = $feedback->xgrade;
-            $submission->submissioncomment    = $feedback->submissioncomment_editor['text'];
-            $submission->teacher    = $USER->id;
+            $submission->grade = $feedback->xgrade;
+            $submission->submissioncomment = $feedback->submissioncomment_editor['text'];
+            $submission->teacher = $USER->id;
             $mailinfo = get_user_preferences('videoboard_mailinfo', 0);
             if (!$mailinfo) {
                 $submission->mailed = 1;       // treat as already mailed
@@ -2789,28 +2890,27 @@ class videoboard_base {
             // triger grade event
             $this->update_grade($submission);
 
-            add_to_log($this->course->id, 'videoboard', 'update grades',
-                       'submissions.php?id='.$this->cm->id.'&user='.$feedback->userid, $feedback->userid, $this->cm->id);
-             if (!is_null($formdata)) {
-                    if ($this->type == 'upload' || $this->type == 'uploadsingle') {
-                        $mformdata = $formdata->mform->get_data();
-                        $mformdata = file_postupdate_standard_filemanager($mformdata, 'files', $formdata->fileui_options, $this->context, 'mod_videoboard', 'response', $submission->id);
-                    }
-             }
+            if (!is_null($formdata)) {
+                if ($this->type == 'upload' || $this->type == 'uploadsingle') {
+                    $mformdata = $formdata->mform->get_data();
+                    $mformdata = file_postupdate_standard_filemanager($mformdata, 'files', $formdata->fileui_options, $this->context, 'mod_videoboard', 'response', $submission->id);
+                }
+            }
         }
 
         return $submission;
 
     }
 
-    function process_outcomes($userid) {
+    function process_outcomes($userid)
+    {
         global $CFG, $USER;
 
         if (empty($CFG->enableoutcomes)) {
             return;
         }
 
-        require_once($CFG->libdir.'/gradelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
 
         if (!$formdata = data_submitted() or !confirm_sesskey()) {
             return;
@@ -2820,8 +2920,8 @@ class videoboard_base {
         $grading_info = grade_get_grades($this->course->id, 'mod', 'videoboard', $this->videoboard->id, $userid);
 
         if (!empty($grading_info->outcomes)) {
-            foreach($grading_info->outcomes as $n=>$old) {
-                $name = 'outcome_'.$n;
+            foreach ($grading_info->outcomes as $n => $old) {
+                $name = 'outcome_' . $n;
                 if (isset($formdata->{$name}[$userid]) and $old->grades[$userid]->grade != $formdata->{$name}[$userid]) {
                     $data[$n] = $formdata->{$name}[$userid];
                 }
@@ -2843,14 +2943,15 @@ class videoboard_base {
      * @param bool $teachermodified student submission set if false
      * @return object The submission
      */
-    function get_submission($userid=0, $createnew=false, $teachermodified=false) {
+    function get_submission($userid = 0, $createnew = false, $teachermodified = false)
+    {
         global $USER, $DB;
 
         if (empty($userid)) {
             $userid = $USER->id;
         }
 
-        $submission = $DB->get_record('videoboard_submissions', array('videoboard'=>$this->videoboard->id, 'userid'=>$userid));
+        $submission = $DB->get_record('videoboard_submissions', array('videoboard' => $this->videoboard->id, 'userid' => $userid));
 
         if ($submission || !$createnew) {
             return $submission;
@@ -2858,7 +2959,7 @@ class videoboard_base {
         $newsubmission = $this->prepare_new_submission($userid, $teachermodified);
         $DB->insert_record("videoboard_submissions", $newsubmission);
 
-        return $DB->get_record('videoboard_submissions', array('videoboard'=>$this->videoboard->id, 'userid'=>$userid));
+        return $DB->get_record('videoboard_submissions', array('videoboard' => $this->videoboard->id, 'userid' => $userid));
     }
 
     /**
@@ -2869,7 +2970,8 @@ class videoboard_base {
      * @param  stdClass $submission The submission we want to check for completion
      * @return bool                 Indicates if the submission was found to be complete
      */
-    public function is_submitted_with_required_data($submission) {
+    public function is_submitted_with_required_data($submission)
+    {
         return $submission->timemodified;
     }
 
@@ -2882,10 +2984,11 @@ class videoboard_base {
      * @param bool $teachermodified student submission set if false
      * @return object The submission
      */
-    function prepare_new_submission($userid, $teachermodified=false) {
+    function prepare_new_submission($userid, $teachermodified = false)
+    {
         $submission = new stdClass();
-        $submission->videoboard   = $this->videoboard->id;
-        $submission->userid       = $userid;
+        $submission->videoboard = $this->videoboard->id;
+        $submission->userid = $userid;
         $submission->timecreated = time();
         // teachers should not be modifying modified date, except offline videoboards
         if ($teachermodified) {
@@ -2893,15 +2996,15 @@ class videoboard_base {
         } else {
             $submission->timemodified = $submission->timecreated;
         }
-        $submission->numfiles     = 0;
-        $submission->data1        = '';
-        $submission->data2        = '';
-        $submission->grade        = -1;
-        $submission->submissioncomment      = '';
-        $submission->format       = 0;
-        $submission->teacher      = 0;
-        $submission->timemarked   = 0;
-        $submission->mailed       = 0;
+        $submission->numfiles = 0;
+        $submission->data1 = '';
+        $submission->data2 = '';
+        $submission->grade = -1;
+        $submission->submissioncomment = '';
+        $submission->format = 0;
+        $submission->teacher = 0;
+        $submission->timemarked = 0;
+        $submission->mailed = 0;
         return $submission;
     }
 
@@ -2912,7 +3015,8 @@ class videoboard_base {
      * @param string $dir optional specifying the sort direction, defaults to DESC
      * @return array The submission objects indexed by id
      */
-    function get_submissions($sort='', $dir='DESC') {
+    function get_submissions($sort = '', $dir = 'DESC')
+    {
         return videoboard_get_all_submissions($this->videoboard, $sort, $dir);
     }
 
@@ -2922,12 +3026,13 @@ class videoboard_base {
      * @param  int $groupid (optional) If nonzero then count is restricted to this group
      * @return int          The number of submissions
      */
-    function count_real_submissions($groupid=0) {
+    function count_real_submissions($groupid = 0)
+    {
         global $CFG;
         global $DB;
 
         // Grab the context assocated with our course module
-        $context = get_context_instance(CONTEXT_MODULE, $this->cm->id);
+        $context = context_module::instance($this->cm->id);
 
         // Get ids of users enrolled in the given course.
         list($enroledsql, $params) = get_enrolled_sql($context, 'mod/videoboard:view', $groupid);
@@ -2954,47 +3059,48 @@ class videoboard_base {
      * @param $submission object The submission that has changed
      * @return void
      */
-    function email_teachers($submission) {
+    function email_teachers($submission)
+    {
         global $CFG, $DB;
 
         if (empty($this->videoboard->emailteachers)) {          // No need to do anything
             return;
         }
 
-        $user = $DB->get_record('user', array('id'=>$submission->userid));
+        $user = $DB->get_record('user', array('id' => $submission->userid));
 
         if ($teachers = $this->get_graders($user)) {
 
             $strvideoboards = get_string('modulenameplural', 'videoboard');
-            $strvideoboard  = get_string('modulename', 'videoboard');
-            $strsubmitted  = get_string('submitted', 'videoboard');
+            $strvideoboard = get_string('modulename', 'videoboard');
+            $strsubmitted = get_string('submitted', 'videoboard');
 
             foreach ($teachers as $teacher) {
                 $info = new stdClass();
                 $info->username = fullname($user, true);
-                $info->videoboard = format_string($this->videoboard->name,true);
-                $info->url = $CFG->wwwroot.'/mod/videoboard/submissions.php?id='.$this->cm->id;
+                $info->videoboard = format_string($this->videoboard->name, true);
+                $info->url = $CFG->wwwroot . '/mod/videoboard/submissions.php?id=' . $this->cm->id;
                 $info->timeupdated = userdate($submission->timemodified, '%c', $teacher->timezone);
 
-                $postsubject = $strsubmitted.': '.$info->username.' -> '.$this->videoboard->name;
+                $postsubject = $strsubmitted . ': ' . $info->username . ' -> ' . $this->videoboard->name;
                 $posttext = $this->email_teachers_text($info);
                 $posthtml = ($teacher->mailformat == 1) ? $this->email_teachers_html($info) : '';
 
                 $eventdata = new stdClass();
-                $eventdata->modulename       = 'videoboard';
-                $eventdata->userfrom         = $user;
-                $eventdata->userto           = $teacher;
-                $eventdata->subject          = $postsubject;
-                $eventdata->fullmessage      = $posttext;
+                $eventdata->modulename = 'videoboard';
+                $eventdata->userfrom = $user;
+                $eventdata->userto = $teacher;
+                $eventdata->subject = $postsubject;
+                $eventdata->fullmessage = $posttext;
                 $eventdata->fullmessageformat = FORMAT_PLAIN;
-                $eventdata->fullmessagehtml  = $posthtml;
-                $eventdata->smallmessage     = $postsubject;
+                $eventdata->fullmessagehtml = $posthtml;
+                $eventdata->smallmessage = $postsubject;
 
-                $eventdata->name            = 'videoboard_updates';
-                $eventdata->component       = 'mod_videoboard';
-                $eventdata->notification    = 1;
-                $eventdata->contexturl      = $info->url;
-                $eventdata->contexturlname  = $info->videoboard;
+                $eventdata->name = 'videoboard_updates';
+                $eventdata->component = 'mod_videoboard';
+                $eventdata->notification = 1;
+                $eventdata->contexturl = $info->url;
+                $eventdata->contexturlname = $info->videoboard;
 
                 message_send($eventdata);
             }
@@ -3006,7 +3112,8 @@ class videoboard_base {
      * @param array $args
      * @return bool
      */
-    function send_file($filearea, $args) {
+    function send_file($filearea, $args)
+    {
         debugging('plugin does not implement file sending', DEBUG_DEVELOPER);
         return false;
     }
@@ -3017,7 +3124,8 @@ class videoboard_base {
      * @param object $user
      * @return array
      */
-    function get_graders($user) {
+    function get_graders($user)
+    {
         //potential graders
         $potgraders = get_users_by_capability($this->context, 'mod/videoboard:grade', '', '', '', '', '', '', false, false);
 
@@ -3062,30 +3170,32 @@ class videoboard_base {
      * @param $info object The info used by the 'emailteachermail' language string
      * @return string
      */
-    function email_teachers_text($info) {
-        $posttext  = format_string($this->course->shortname, true, array('context' => $this->coursecontext)).' -> '.
-                     $this->strvideoboards.' -> '.
-                     format_string($this->videoboard->name, true, array('context' => $this->context))."\n";
-        $posttext .= '---------------------------------------------------------------------'."\n";
-        $posttext .= get_string("emailteachermail", "videoboard", $info)."\n";
+    function email_teachers_text($info)
+    {
+        $posttext = format_string($this->course->shortname, true, array('context' => $this->coursecontext)) . ' -> ' .
+            $this->strvideoboards . ' -> ' .
+            format_string($this->videoboard->name, true, array('context' => $this->context)) . "\n";
+        $posttext .= '---------------------------------------------------------------------' . "\n";
+        $posttext .= get_string("emailteachermail", "videoboard", $info) . "\n";
         $posttext .= "\n---------------------------------------------------------------------\n";
         return $posttext;
     }
 
-     /**
+    /**
      * Creates the html content for emails to teachers
      *
      * @param $info object The info used by the 'emailteachermailhtml' language string
      * @return string
      */
-    function email_teachers_html($info) {
+    function email_teachers_html($info)
+    {
         global $CFG;
-        $posthtml  = '<p><font face="sans-serif">'.
-                     '<a href="'.$CFG->wwwroot.'/course/view.php?id='.$this->course->id.'">'.format_string($this->course->shortname, true, array('context' => $this->coursecontext)).'</a> ->'.
-                     '<a href="'.$CFG->wwwroot.'/mod/videoboard/index.php?id='.$this->course->id.'">'.$this->strvideoboards.'</a> ->'.
-                     '<a href="'.$CFG->wwwroot.'/mod/videoboard/view.php?id='.$this->cm->id.'">'.format_string($this->videoboard->name, true, array('context' => $this->context)).'</a></font></p>';
+        $posthtml = '<p><font face="sans-serif">' .
+            '<a href="' . $CFG->wwwroot . '/course/view.php?id=' . $this->course->id . '">' . format_string($this->course->shortname, true, array('context' => $this->coursecontext)) . '</a> ->' .
+            '<a href="' . $CFG->wwwroot . '/mod/videoboard/index.php?id=' . $this->course->id . '">' . $this->strvideoboards . '</a> ->' .
+            '<a href="' . $CFG->wwwroot . '/mod/videoboard/view.php?id=' . $this->cm->id . '">' . format_string($this->videoboard->name, true, array('context' => $this->context)) . '</a></font></p>';
         $posthtml .= '<hr /><font face="sans-serif">';
-        $posthtml .= '<p>'.get_string('emailteachermailhtml', 'videoboard', $info).'</p>';
+        $posthtml .= '<p>' . get_string('emailteachermailhtml', 'videoboard', $info) . '</p>';
         $posthtml .= '</font><hr />';
         return $posthtml;
     }
@@ -3097,7 +3207,8 @@ class videoboard_base {
      * @param $return boolean optional defaults to false. If true the list is returned rather than printed
      * @return string optional
      */
-    function print_user_files($userid=0, $return=false) {
+    function print_user_files($userid = 0, $return = false)
+    {
         global $CFG, $USER, $OUTPUT;
 
         if (!$userid) {
@@ -3119,14 +3230,14 @@ class videoboard_base {
         if (!empty($files)) {
             require_once($CFG->dirroot . '/mod/videoboard/locallib.php');
             if ($CFG->enableportfolios) {
-                require_once($CFG->libdir.'/portfoliolib.php');
+                require_once($CFG->libdir . '/portfoliolib.php');
                 $button = new portfolio_add_button();
             }
             foreach ($files as $file) {
                 $filename = $file->get_filename();
                 $mimetype = $file->get_mimetype();
-                $path = file_encode_url($CFG->wwwroot.'/pluginfile.php', '/'.$this->context->id.'/mod_videoboard/submission/'.$submission->id.'/'.$filename);
-                $output .= '<a href="'.$path.'" ><img src="'.$OUTPUT->pix_url(file_mimetype_icon($mimetype)).'" class="icon" alt="'.$mimetype.'" />'.s($filename).'</a>';
+                $path = file_encode_url($CFG->wwwroot . '/pluginfile.php', '/' . $this->context->id . '/mod_videoboard/submission/' . $submission->id . '/' . $filename);
+                $output .= '<a href="' . $path . '" ><img src="' . $OUTPUT->pix_url(file_mimetype_icon($mimetype)) . '" class="icon" alt="' . $mimetype . '" />' . s($filename) . '</a>';
                 if ($CFG->enableportfolios && $this->portfolio_exportable() && has_capability('mod/videoboard:exportownsubmission', $this->context)) {
                     $button->set_callback_options('videoboard_portfolio_caller', array('id' => $this->cm->id, 'submissionid' => $submission->id, 'fileid' => $file->get_id()), '/mod/videoboard/locallib.php');
                     $button->set_format_by_file($file);
@@ -3134,18 +3245,18 @@ class videoboard_base {
                 }
 
                 if ($CFG->enableplagiarism) {
-                    require_once($CFG->libdir.'/plagiarismlib.php');
-                    $output .= plagiarism_get_links(array('userid'=>$userid, 'file'=>$file, 'cmid'=>$this->cm->id, 'course'=>$this->course, 'videoboard'=>$this->videoboard));
+                    require_once($CFG->libdir . '/plagiarismlib.php');
+                    $output .= plagiarism_get_links(array('userid' => $userid, 'file' => $file, 'cmid' => $this->cm->id, 'course' => $this->course, 'videoboard' => $this->videoboard));
                     $output .= '<br />';
                 }
             }
-            if ($CFG->enableportfolios && count($files) > 1  && $this->portfolio_exportable() && has_capability('mod/videoboard:exportownsubmission', $this->context)) {
+            if ($CFG->enableportfolios && count($files) > 1 && $this->portfolio_exportable() && has_capability('mod/videoboard:exportownsubmission', $this->context)) {
                 $button->set_callback_options('videoboard_portfolio_caller', array('id' => $this->cm->id, 'submissionid' => $submission->id), '/mod/videoboard/locallib.php');
-                $output .= '<br />'  . $button->to_html(PORTFOLIO_ADD_TEXT_LINK);
+                $output .= '<br />' . $button->to_html(PORTFOLIO_ADD_TEXT_LINK);
             }
         }
 
-        $output = '<div class="files">'.$output.'</div>';
+        $output = '<div class="files">' . $output . '</div>';
 
         if ($return) {
             return $output;
@@ -3159,7 +3270,8 @@ class videoboard_base {
      * @param $itemid int The submission's id as the file's itemid.
      * @return int
      */
-    function count_user_files($itemid) {
+    function count_user_files($itemid)
+    {
         $fs = get_file_storage();
         $files = $fs->get_area_files($this->context->id, 'mod_videoboard', 'submission', $itemid, "id", false);
         return count($files);
@@ -3172,7 +3284,8 @@ class videoboard_base {
      * submissions is set, also checks that the videoboard has not yet closed.
      * @return boolean
      */
-    function isopen() {
+    function isopen()
+    {
         $time = time();
         if ($this->videoboard->preventlate && $this->videoboard->timedue) {
             return ($this->videoboard->timeavailable <= $time && $time <= $this->videoboard->timedue);
@@ -3193,7 +3306,8 @@ class videoboard_base {
      * videoboards types should implement this method if needed
      * @return boolen
      */
-    function description_is_hidden() {
+    function description_is_hidden()
+    {
         return false;
     }
 
@@ -3204,10 +3318,11 @@ class videoboard_base {
      * @param $grade object
      * @return object with properties ->info and ->time
      */
-    function user_outline($grade) {
+    function user_outline($grade)
+    {
 
         $result = new stdClass();
-        $result->info = get_string('grade').': '.$grade->str_long_grade;
+        $result->info = get_string('grade') . ': ' . $grade->str_long_grade;
         $result->time = $grade->dategraded;
         return $result;
     }
@@ -3217,7 +3332,8 @@ class videoboard_base {
      *
      * @param $user object
      */
-    function user_complete($user, $grade=null) {
+    function user_complete($user, $grade = null)
+    {
         global $OUTPUT;
 
         if ($submission = $this->get_submission($user->id)) {
@@ -3225,14 +3341,14 @@ class videoboard_base {
             $fs = get_file_storage();
 
             if ($files = $fs->get_area_files($this->context->id, 'mod_videoboard', 'submission', $submission->id, "timemodified", false)) {
-                $countfiles = count($files)." ".get_string("uploadedfiles", "videoboard");
+                $countfiles = count($files) . " " . get_string("uploadedfiles", "videoboard");
                 foreach ($files as $file) {
-                    $countfiles .= "; ".$file->get_filename();
+                    $countfiles .= "; " . $file->get_filename();
                 }
             }
 
             echo $OUTPUT->box_start();
-            echo get_string("lastmodified").": ";
+            echo get_string("lastmodified") . ": ";
             echo userdate($submission->timemodified);
             echo $this->display_lateness($submission->timemodified);
 
@@ -3246,9 +3362,9 @@ class videoboard_base {
 
         } else {
             if ($grade) {
-                echo $OUTPUT->container(get_string('grade').': '.$grade->str_long_grade);
+                echo $OUTPUT->container(get_string('grade') . ': ' . $grade->str_long_grade);
                 if ($grade->str_feedback) {
-                    echo $OUTPUT->container(get_string('feedback').': '.$grade->str_feedback);
+                    echo $OUTPUT->container(get_string('feedback') . ': ' . $grade->str_feedback);
                 }
             }
             print_string("notsubmittedyet", "videoboard");
@@ -3261,22 +3377,25 @@ class videoboard_base {
      * @param $timesubmitted int
      * @return string
      */
-    function display_lateness($timesubmitted) {
+    function display_lateness($timesubmitted)
+    {
         return videoboard_display_lateness($timesubmitted, $this->videoboard->timedue);
     }
 
     /**
      * Empty method stub for all delete actions.
      */
-    function delete() {
+    function delete()
+    {
         //nothing by default
-        redirect('view.php?id='.$this->cm->id);
+        redirect('view.php?id=' . $this->cm->id);
     }
 
     /**
      * Empty custom feedback grading form.
      */
-    function custom_feedbackform($submission, $return=false) {
+    function custom_feedbackform($submission, $return = false)
+    {
         //nothing by default
         return '';
     }
@@ -3291,7 +3410,8 @@ class videoboard_base {
      * @param $coursemodule object The coursemodule object (record).
      * @return cached_cm_info Object used to customise appearance on course page
      */
-    function get_coursemodule_info($coursemodule) {
+    function get_coursemodule_info($coursemodule)
+    {
         return null;
     }
 
@@ -3299,27 +3419,29 @@ class videoboard_base {
      * Plugin cron method - do not use $this here, create new videoboard instances if needed.
      * @return void
      */
-    function cron() {
+    function cron()
+    {
         //no plugin cron by default - override if needed
     }
 
     /**
      * Reset all submissions
      */
-    function reset_userdata($data) {
+    function reset_userdata($data)
+    {
         global $CFG, $DB;
 
-        if (!$DB->count_records('videoboard', array('course'=>$data->courseid, 'videoboardtype'=>$this->type))) {
+        if (!$DB->count_records('videoboard', array('course' => $data->courseid, 'videoboardtype' => $this->type))) {
             return array(); // no videoboards of this type present
         }
 
         $componentstr = get_string('modulenameplural', 'videoboard');
         $status = array();
 
-        $typestr = get_string('type'.$this->type, 'videoboard');
+        $typestr = get_string('type' . $this->type, 'videoboard');
         // ugly hack to support pluggable videoboard type titles...
-        if($typestr === '[[type'.$this->type.']]'){
-            $typestr = get_string('type'.$this->type, 'videoboard_'.$this->type);
+        if ($typestr === '[[type' . $this->type . ']]') {
+            $typestr = get_string('type' . $this->type, 'videoboard_' . $this->type);
         }
 
         if (!empty($data->reset_videoboard_submissions)) {
@@ -3331,11 +3453,11 @@ class videoboard_base {
             // now get rid of all submissions and responses
             $fs = get_file_storage();
             if ($videoboards = $DB->get_records_sql($videoboardssql, $params)) {
-                foreach ($videoboards as $videoboardid=>$unused) {
+                foreach ($videoboards as $videoboardid => $unused) {
                     if (!$cm = get_coursemodule_from_instance('videoboard', $videoboardid)) {
                         continue;
                     }
-                    $context = get_context_instance(CONTEXT_MODULE, $cm->id);
+                    $context = context_module::instance($cm->id);
                     $fs->delete_area_files($context->id, 'mod_videoboard', 'submission');
                     $fs->delete_area_files($context->id, 'mod_videoboard', 'response');
                 }
@@ -3343,7 +3465,7 @@ class videoboard_base {
 
             $DB->delete_records_select('videoboard_submissions', "videoboard IN ($videoboardssql)", $params);
 
-            $status[] = array('component'=>$componentstr, 'item'=>get_string('deleteallsubmissions','videoboard').': '.$typestr, 'error'=>false);
+            $status[] = array('component' => $componentstr, 'item' => get_string('deleteallsubmissions', 'videoboard') . ': ' . $typestr, 'error' => false);
 
             if (empty($data->reset_gradebook_grades)) {
                 // remove all grades from gradebook
@@ -3354,14 +3476,15 @@ class videoboard_base {
         /// updating dates - shift may be negative too
         if ($data->timeshift) {
             shift_course_mod_dates('videoboard', array('timedue', 'timeavailable'), $data->timeshift, $data->courseid);
-            $status[] = array('component'=>$componentstr, 'item'=>get_string('datechanged').': '.$typestr, 'error'=>false);
+            $status[] = array('component' => $componentstr, 'item' => get_string('datechanged') . ': ' . $typestr, 'error' => false);
         }
 
         return $status;
     }
 
 
-    function portfolio_exportable() {
+    function portfolio_exportable()
+    {
         return false;
     }
 
@@ -3376,7 +3499,8 @@ class videoboard_base {
      *
      * @static
      */
-    static function backup_one_mod($bf, $preferences, $videoboard) {
+    static function backup_one_mod($bf, $preferences, $videoboard)
+    {
         return true;
     }
 
@@ -3392,7 +3516,8 @@ class videoboard_base {
      *
      * @static
      */
-    static function backup_one_submission($bf, $preferences, $videoboard, $submission) {
+    static function backup_one_submission($bf, $preferences, $videoboard, $submission)
+    {
         return true;
     }
 
@@ -3400,14 +3525,15 @@ class videoboard_base {
      * base implementation for restoring subtype specific information
      * for one single module
      *
-     * @param array  $info the array representing the xml
+     * @param array $info the array representing the xml
      * @param object $restore the restore preferences
      *
      * @return boolean
      *
      * @static
      */
-    static function restore_one_mod($info, $restore, $videoboard) {
+    static function restore_one_mod($info, $restore, $videoboard)
+    {
         return true;
     }
 
@@ -3416,25 +3542,28 @@ class videoboard_base {
      * for one single submission
      *
      * @param object $submission the newly created submission
-     * @param array  $info the array representing the xml
+     * @param array $info the array representing the xml
      * @param object $restore the restore preferences
      *
      * @return boolean
      *
      * @static
      */
-    static function restore_one_submission($info, $restore, $videoboard, $submission) {
+    static function restore_one_submission($info, $restore, $videoboard, $submission)
+    {
         return true;
     }
 
 } ////// End of the videoboard_base class
 
 
-class mod_videoboard_grading_form extends moodleform {
+class mod_videoboard_grading_form extends moodleform
+{
     /** @var stores the advaned grading instance (if used in grading) */
     private $advancegradinginstance;
 
-    function definition() {
+    function definition()
+    {
         global $OUTPUT;
         $mform =& $this->_form;
 
@@ -3446,7 +3575,7 @@ class mod_videoboard_grading_form extends moodleform {
         $formattr['id'] = 'submitform';
         $mform->setAttributes($formattr);
         // hidden params
-        $mform->addElement('hidden', 'offset', ($this->_customdata->offset+1));
+        $mform->addElement('hidden', 'offset', ($this->_customdata->offset + 1));
         $mform->setType('offset', PARAM_INT);
         $mform->addElement('hidden', 'userid', $this->_customdata->userid);
         $mform->setType('userid', PARAM_INT);
@@ -3466,9 +3595,9 @@ class mod_videoboard_grading_form extends moodleform {
         $mform->setType('filter', PARAM_INT);
 
         $mform->addElement('static', 'picture', $OUTPUT->user_picture($this->_customdata->user),
-                                                fullname($this->_customdata->user, true) . '<br/>' .
-                                                userdate($this->_customdata->submission->timemodified) .
-                                                $this->_customdata->lateness );
+            fullname($this->_customdata->user, true) . '<br/>' .
+            userdate($this->_customdata->submission->timemodified) .
+            $this->_customdata->lateness);
 
         $this->add_submission_content();
         $this->add_grades_section();
@@ -3476,11 +3605,11 @@ class mod_videoboard_grading_form extends moodleform {
         $this->add_feedback_section();
 
         if ($this->_customdata->submission->timemarked) {
-            $datestring = userdate($this->_customdata->submission->timemarked)."&nbsp; (".format_time(time() - $this->_customdata->submission->timemarked).")";
+            $datestring = userdate($this->_customdata->submission->timemarked) . "&nbsp; (" . format_time(time() - $this->_customdata->submission->timemarked) . ")";
             $mform->addElement('header', 'Last Grade', get_string('lastgrade', 'videoboard'));
-            $mform->addElement('static', 'picture', $OUTPUT->user_picture($this->_customdata->teacher) ,
-                                                    fullname($this->_customdata->teacher,true).
-                                                    '<br/>'.$datestring);
+            $mform->addElement('static', 'picture', $OUTPUT->user_picture($this->_customdata->teacher),
+                fullname($this->_customdata->teacher, true) .
+                '<br/>' . $datestring);
         }
         // buttons
         $this->add_action_buttons();
@@ -3492,19 +3621,21 @@ class mod_videoboard_grading_form extends moodleform {
      *
      * @param gradingform_instance $gradinginstance
      */
-    public function use_advanced_grading($gradinginstance = false) {
+    public function use_advanced_grading($gradinginstance = false)
+    {
         if ($gradinginstance !== false) {
             $this->advancegradinginstance = $gradinginstance;
         }
         return $this->advancegradinginstance;
     }
 
-    function add_grades_section() {
+    function add_grades_section()
+    {
         global $CFG;
         $mform =& $this->_form;
         $attributes = array();
         if ($this->_customdata->gradingdisabled) {
-            $attributes['disabled'] ='disabled';
+            $attributes['disabled'] = 'disabled';
         }
 
         $mform->addElement('header', 'Grades', get_string('grades', 'grades'));
@@ -3512,7 +3643,7 @@ class mod_videoboard_grading_form extends moodleform {
         $grademenu = make_grades_menu($this->_customdata->videoboard->grade);
         if ($gradinginstance = $this->use_advanced_grading()) {
             $gradinginstance->get_controller()->set_grade_range($grademenu);
-            $gradingelement = $mform->addElement('grading', 'advancedgrading', get_string('grade').':', array('gradinginstance' => $gradinginstance));
+            $gradingelement = $mform->addElement('grading', 'advancedgrading', get_string('grade') . ':', array('gradinginstance' => $gradinginstance));
             if ($this->_customdata->gradingdisabled) {
                 $gradingelement->freeze();
             } else {
@@ -3522,35 +3653,35 @@ class mod_videoboard_grading_form extends moodleform {
             // use simple direct grading
             $grademenu['-1'] = get_string('nograde');
 
-            $mform->addElement('select', 'xgrade', get_string('grade').':', $grademenu, $attributes);
-            $mform->setDefault('xgrade', $this->_customdata->submission->grade ); //@fixme some bug when element called 'grade' makes it break
+            $mform->addElement('select', 'xgrade', get_string('grade') . ':', $grademenu, $attributes);
+            $mform->setDefault('xgrade', $this->_customdata->submission->grade); //@fixme some bug when element called 'grade' makes it break
             $mform->setType('xgrade', PARAM_INT);
         }
 
         if (!empty($this->_customdata->enableoutcomes)) {
-            foreach($this->_customdata->grading_info->outcomes as $n=>$outcome) {
+            foreach ($this->_customdata->grading_info->outcomes as $n => $outcome) {
                 $options = make_grades_menu(-$outcome->scaleid);
                 if ($outcome->grades[$this->_customdata->submission->userid]->locked) {
                     $options[0] = get_string('nooutcome', 'grades');
-                    $mform->addElement('static', 'outcome_'.$n.'['.$this->_customdata->userid.']', $outcome->name.':',
-                            $options[$outcome->grades[$this->_customdata->submission->userid]->grade]);
+                    $mform->addElement('static', 'outcome_' . $n . '[' . $this->_customdata->userid . ']', $outcome->name . ':',
+                        $options[$outcome->grades[$this->_customdata->submission->userid]->grade]);
                 } else {
                     $options[''] = get_string('nooutcome', 'grades');
-                    $attributes = array('id' => 'menuoutcome_'.$n );
-                    $mform->addElement('select', 'outcome_'.$n.'['.$this->_customdata->userid.']', $outcome->name.':', $options, $attributes );
-                    $mform->setType('outcome_'.$n.'['.$this->_customdata->userid.']', PARAM_INT);
-                    $mform->setDefault('outcome_'.$n.'['.$this->_customdata->userid.']', $outcome->grades[$this->_customdata->submission->userid]->grade );
+                    $attributes = array('id' => 'menuoutcome_' . $n);
+                    $mform->addElement('select', 'outcome_' . $n . '[' . $this->_customdata->userid . ']', $outcome->name . ':', $options, $attributes);
+                    $mform->setType('outcome_' . $n . '[' . $this->_customdata->userid . ']', PARAM_INT);
+                    $mform->setDefault('outcome_' . $n . '[' . $this->_customdata->userid . ']', $outcome->grades[$this->_customdata->submission->userid]->grade);
                 }
             }
         }
-        $course_context = get_context_instance(CONTEXT_MODULE , $this->_customdata->cm->id);
+        $course_context = context_module::instance($this->_customdata->cm->id);
         if (has_capability('gradereport/grader:view', $course_context) && has_capability('moodle/grade:viewall', $course_context)) {
-            $grade = '<a href="'.$CFG->wwwroot.'/grade/report/grader/index.php?id='. $this->_customdata->courseid .'" >'.
-                        $this->_customdata->grading_info->items[0]->grades[$this->_customdata->userid]->str_grade . '</a>';
-        }else{
+            $grade = '<a href="' . $CFG->wwwroot . '/grade/report/grader/index.php?id=' . $this->_customdata->courseid . '" >' .
+                $this->_customdata->grading_info->items[0]->grades[$this->_customdata->userid]->str_grade . '</a>';
+        } else {
             $grade = $this->_customdata->grading_info->items[0]->grades[$this->_customdata->userid]->str_grade;
         }
-        $mform->addElement('static', 'finalgrade', get_string('currentgrade', 'videoboard').':' ,$grade);
+        $mform->addElement('static', 'finalgrade', get_string('currentgrade', 'videoboard') . ':', $grade);
         $mform->setType('finalgrade', PARAM_INT);
     }
 
@@ -3558,48 +3689,50 @@ class mod_videoboard_grading_form extends moodleform {
      *
      * @global core_renderer $OUTPUT
      */
-    function add_feedback_section() {
+    function add_feedback_section()
+    {
         global $OUTPUT;
         $mform =& $this->_form;
         $mform->addElement('header', 'Feed Back', get_string('feedback', 'grades'));
 
         if ($this->_customdata->gradingdisabled) {
-            $mform->addElement('static', 'disabledfeedback', $this->_customdata->grading_info->items[0]->grades[$this->_customdata->userid]->str_feedback );
+            $mform->addElement('static', 'disabledfeedback', $this->_customdata->grading_info->items[0]->grades[$this->_customdata->userid]->str_feedback);
         } else {
             // visible elements
 
-            $mform->addElement('editor', 'submissioncomment_editor', get_string('feedback', 'videoboard').':', null, $this->get_editor_options() );
+            $mform->addElement('editor', 'submissioncomment_editor', get_string('feedback', 'videoboard') . ':', null, $this->get_editor_options());
             $mform->setType('submissioncomment_editor', PARAM_RAW); // to be cleaned before display
             $mform->setDefault('submissioncomment_editor', $this->_customdata->submission->submissioncomment);
             //$mform->addRule('submissioncomment', get_string('required'), 'required', null, 'client');
             switch ($this->_customdata->videoboard->videoboardtype) {
                 case 'upload' :
                 case 'uploadsingle' :
-                    $mform->addElement('filemanager', 'files_filemanager', get_string('responsefiles', 'videoboard'). ':', null, $this->_customdata->fileui_options);
+                    $mform->addElement('filemanager', 'files_filemanager', get_string('responsefiles', 'videoboard') . ':', null, $this->_customdata->fileui_options);
                     break;
                 default :
                     break;
             }
             $mform->addElement('hidden', 'mailinfo_h', "0");
             $mform->setType('mailinfo_h', PARAM_INT);
-            $mform->addElement('checkbox', 'mailinfo',get_string('enablenotification','videoboard').
-            $OUTPUT->help_icon('enablenotification', 'videoboard') .':' );
+            $mform->addElement('checkbox', 'mailinfo', get_string('enablenotification', 'videoboard') .
+                $OUTPUT->help_icon('enablenotification', 'videoboard') . ':');
             $mform->setType('mailinfo', PARAM_INT);
         }
     }
 
-    function add_action_buttons($cancel = true, $submitlabel = NULL) {
+    function add_action_buttons($cancel = true, $submitlabel = NULL)
+    {
         $mform =& $this->_form;
         //if there are more to be graded.
-        if ($this->_customdata->nextid>0) {
-            $buttonarray=array();
+        if ($this->_customdata->nextid > 0) {
+            $buttonarray = array();
             $buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('savechanges'));
             //@todo: fix accessibility: javascript dependency not necessary
             $buttonarray[] = &$mform->createElement('submit', 'saveandnext', get_string('saveandnext'));
             $buttonarray[] = &$mform->createElement('submit', 'next', get_string('next'));
             $buttonarray[] = &$mform->createElement('cancel');
         } else {
-            $buttonarray=array();
+            $buttonarray = array();
             $buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('savechanges'));
             $buttonarray[] = &$mform->createElement('cancel');
         }
@@ -3608,13 +3741,15 @@ class mod_videoboard_grading_form extends moodleform {
         $mform->setType('grading_buttonar', PARAM_RAW);
     }
 
-    function add_submission_content() {
+    function add_submission_content()
+    {
         $mform =& $this->_form;
         $mform->addElement('header', 'Submission', get_string('submission', 'videoboard'));
-        $mform->addElement('static', '', '' , $this->_customdata->submission_content );
+        $mform->addElement('static', '', '', $this->_customdata->submission_content);
     }
 
-    protected function get_editor_options() {
+    protected function get_editor_options()
+    {
         $editoroptions = array();
         $editoroptions['component'] = 'mod_videoboard';
         $editoroptions['filearea'] = 'feedback';
@@ -3625,7 +3760,8 @@ class mod_videoboard_grading_form extends moodleform {
         return $editoroptions;
     }
 
-    public function set_data($data) {
+    public function set_data($data)
+    {
         $editoroptions = $this->get_editor_options();
         if (!isset($data->text)) {
             $data->text = '';
@@ -3643,19 +3779,20 @@ class mod_videoboard_grading_form extends moodleform {
         }
 
         switch ($this->_customdata->videoboard->videoboardtype) {
-                case 'upload' :
-                case 'uploadsingle' :
-                    $data = file_prepare_standard_filemanager($data, 'files', $editoroptions, $this->_customdata->context, 'mod_videoboard', 'response', $itemid);
-                    break;
-                default :
-                    break;
+            case 'upload' :
+            case 'uploadsingle' :
+                $data = file_prepare_standard_filemanager($data, 'files', $editoroptions, $this->_customdata->context, 'mod_videoboard', 'response', $itemid);
+                break;
+            default :
+                break;
         }
 
         $data = file_prepare_standard_editor($data, 'submissioncomment', $editoroptions, $this->_customdata->context, $editoroptions['component'], $editoroptions['filearea'], $itemid);
         return parent::set_data($data);
     }
 
-    public function get_data() {
+    public function get_data()
+    {
         $data = parent::get_data();
 
         if (!empty($this->_customdata->submission->id)) {
@@ -3686,9 +3823,8 @@ class mod_videoboard_grading_form extends moodleform {
 }
 
 
-
-
-function videoboard_user_outline($course, $user, $mod, $videoboard) {
+function videoboard_user_outline($course, $user, $mod, $videoboard)
+{
     global $CFG;
 
     require_once("$CFG->libdir/gradelib.php");
@@ -3708,7 +3844,8 @@ function videoboard_user_outline($course, $user, $mod, $videoboard) {
  *
  * This is done by calling the user_complete() method of the videoboard type class
  */
-function videoboard_user_complete($course, $user, $mod, $videoboard) {
+function videoboard_user_complete($course, $user, $mod, $videoboard)
+{
     global $CFG;
 
     require_once("$CFG->libdir/gradelib.php");
@@ -3732,12 +3869,13 @@ function videoboard_user_complete($course, $user, $mod, $videoboard) {
  * @param int $userid optional user id, 0 means all users
  * @return array array of grades, false if none
  */
-function videoboard_get_user_grades($videoboard, $userid=0) {
+function videoboard_get_user_grades($videoboard, $userid = 0)
+{
     global $CFG, $DB;
 
     if ($userid) {
         $user = "AND u.id = :userid";
-        $params = array('userid'=>$userid);
+        $params = array('userid' => $userid);
     } else {
         $user = "";
     }
@@ -3758,15 +3896,16 @@ function videoboard_get_user_grades($videoboard, $userid=0) {
  * @param object $videoboard
  * @param int $userid specific user only, 0 means all
  */
-function videoboard_update_grades($videoboard, $userid=0, $nullifnone=true) {
+function videoboard_update_grades($videoboard, $userid = 0, $nullifnone = true)
+{
     global $CFG, $DB;
-    require_once($CFG->libdir.'/gradelib.php');
+    require_once($CFG->libdir . '/gradelib.php');
 
     if ($videoboard->grade == 0) {
         videoboard_grade_item_update($videoboard);
 
     } else if ($grades = videoboard_get_user_grades($videoboard, $userid)) {
-        foreach($grades as $k=>$v) {
+        foreach ($grades as $k => $v) {
             if ($v->rawgrade == -1) {
                 $grades[$k]->rawgrade = null;
             }
@@ -3781,7 +3920,8 @@ function videoboard_update_grades($videoboard, $userid=0, $nullifnone=true) {
 /**
  * Update all grades in gradebook.
  */
-function videoboard_upgrade_grades() {
+function videoboard_upgrade_grades()
+{
     global $DB;
 
     $sql = "SELECT COUNT('x')
@@ -3796,10 +3936,10 @@ function videoboard_upgrade_grades() {
     if ($rs->valid()) {
         // too much debug output
         $pbar = new progress_bar('videoboardupgradegrades', 500, true);
-        $i=0;
+        $i = 0;
         foreach ($rs as $videoboard) {
             $i++;
-            upgrade_set_timeout(60*5); // set up timeout, may also abort execution
+            upgrade_set_timeout(60 * 5); // set up timeout, may also abort execution
             videoboard_update_grades($videoboard);
             $pbar->update($i, $count, "Updating videoboard grades ($i/$count).");
         }
@@ -3815,31 +3955,32 @@ function videoboard_upgrade_grades() {
  * @param mixed optional array/object of grade(s); 'reset' means reset grades in gradebook
  * @return int 0 if ok, error code otherwise
  */
- 
-function videoboard_grade_item_update($videoboard, $grades=NULL) {
+
+function videoboard_grade_item_update($videoboard, $grades = NULL)
+{
     global $CFG;
-    require_once($CFG->libdir.'/gradelib.php');
+    require_once($CFG->libdir . '/gradelib.php');
 
     if (!isset($videoboard->courseid)) {
         $videoboard->courseid = $videoboard->course;
     }
 
-    $params = array('itemname'=>$videoboard->name, 'idnumber'=>$videoboard->cmidnumber);
+    $params = array('itemname' => $videoboard->name, 'idnumber' => $videoboard->cmidnumber);
 
     if ($videoboard->grade > 0) {
         $params['gradetype'] = GRADE_TYPE_VALUE;
-        $params['grademax']  = $videoboard->grade;
-        $params['grademin']  = 0;
+        $params['grademax'] = $videoboard->grade;
+        $params['grademin'] = 0;
 
     } else if ($videoboard->grade < 0) {
         $params['gradetype'] = GRADE_TYPE_SCALE;
-        $params['scaleid']   = -$videoboard->grade;
+        $params['scaleid'] = -$videoboard->grade;
 
     } else {
         $params['gradetype'] = GRADE_TYPE_TEXT; // allow text comments only
     }
 
-    if ($grades  === 'reset') {
+    if ($grades === 'reset') {
         $params['reset'] = true;
         $grades = NULL;
     }
@@ -3854,15 +3995,16 @@ function videoboard_grade_item_update($videoboard, $grades=NULL) {
  * @param object $videoboard object
  * @return object videoboard
  */
-function videoboard_grade_item_delete($videoboard) {
+function videoboard_grade_item_delete($videoboard)
+{
     global $CFG;
-    require_once($CFG->libdir.'/gradelib.php');
+    require_once($CFG->libdir . '/gradelib.php');
 
     if (!isset($videoboard->courseid)) {
         $videoboard->courseid = $videoboard->course;
     }
 
-    return grade_update('mod/videoboard', $videoboard->courseid, 'mod', 'videoboard', $videoboard->id, 0, NULL, array('deleted'=>1));
+    return grade_update('mod/videoboard', $videoboard->courseid, 'mod', 'videoboard', $videoboard->id, 0, NULL, array('deleted' => 1));
 }
 
 /**
@@ -3873,7 +4015,8 @@ function videoboard_grade_item_delete($videoboard) {
  * @param $videoboardid int
  * @return array of user objects
  */
-function videoboard_get_participants($videoboardid) {
+function videoboard_get_participants($videoboardid)
+{
     global $CFG, $DB;
 
     //Get students
@@ -3899,38 +4042,7 @@ function videoboard_get_participants($videoboardid) {
     return ($students);
 }
 
-/**
- * Serves videoboard submissions and other files.
- *
- * @param object $course
- * @param object $cm
- * @param object $context
- * @param string $filearea
- * @param array $args
- * @param bool $forcedownload
- * @return bool false if file not found, does not return if found - just send the file
- */
- /*
-function videoboard_pluginfile($course, $cm, $context, $filearea, $args, $forcedownload) {
-    global $CFG, $DB;
 
-    if ($context->contextlevel != CONTEXT_MODULE) {
-        return false;
-    }
-
-    require_login($course, false, $cm);
-
-    if (!$videoboard = $DB->get_record('videoboard', array('id'=>$cm->instance))) {
-        return false;
-    }
-
-    require_once($CFG->dirroot.'/mod/videoboard/type/'.$videoboard->videoboardtype.'/videoboard.class.php');
-    $videoboardclass = 'videoboard_'.$videoboard->videoboardtype;
-    $videoboardinstance = new $videoboardclass($cm->id, $videoboard, $cm, $course);
-
-    return $videoboardinstance->send_file($filearea, $args);
-}
-*/
 /**
  * Checks if a scale is being used by an videoboard
  *
@@ -3939,12 +4051,13 @@ function videoboard_pluginfile($course, $cm, $context, $filearea, $args, $forced
  * @param $scaleid int
  * @return boolean True if the scale is used by the videoboard
  */
-function videoboard_scale_used($videoboardid, $scaleid) {
+function videoboard_scale_used($videoboardid, $scaleid)
+{
     global $DB;
 
     $return = false;
 
-    $rec = $DB->get_record('videoboard', array('id'=>$videoboardid,'grade'=>-$scaleid));
+    $rec = $DB->get_record('videoboard', array('id' => $videoboardid, 'grade' => -$scaleid));
 
     if (!empty($rec) && !empty($scaleid)) {
         $return = true;
@@ -3960,10 +4073,11 @@ function videoboard_scale_used($videoboardid, $scaleid) {
  * @param $scaleid int
  * @return boolean True if the scale is used by any videoboard
  */
-function videoboard_scale_used_anywhere($scaleid) {
+function videoboard_scale_used_anywhere($scaleid)
+{
     global $DB;
 
-    if ($scaleid and $DB->record_exists('videoboard', array('grade'=>-$scaleid))) {
+    if ($scaleid and $DB->record_exists('videoboard', array('grade' => -$scaleid))) {
         return true;
     } else {
         return false;
@@ -3982,39 +4096,40 @@ function videoboard_scale_used_anywhere($scaleid) {
  * @param $courseid int optional If zero then all videoboards for all courses are covered
  * @return boolean Always returns true
  */
-function videoboard_refresh_events($courseid = 0) {
+function videoboard_refresh_events($courseid = 0)
+{
     global $DB;
 
     if ($courseid == 0) {
-        if (! $videoboards = $DB->get_records("videoboard")) {
+        if (!$videoboards = $DB->get_records("videoboard")) {
             return true;
         }
     } else {
-        if (! $videoboards = $DB->get_records("videoboard", array("course"=>$courseid))) {
+        if (!$videoboards = $DB->get_records("videoboard", array("course" => $courseid))) {
             return true;
         }
     }
-    $moduleid = $DB->get_field('modules', 'id', array('name'=>'videoboard'));
+    $moduleid = $DB->get_field('modules', 'id', array('name' => 'videoboard'));
 
     foreach ($videoboards as $videoboard) {
         $cm = get_coursemodule_from_id('videoboard', $videoboard->id);
         $event = new stdClass();
-        $event->name        = $videoboard->name;
+        $event->name = $videoboard->name;
         $event->description = format_module_intro('videoboard', $videoboard, $cm->id);
-        $event->timestart   = $videoboard->timedue;
+        $event->timestart = $videoboard->timedue;
 
-        if ($event->id = $DB->get_field('event', 'id', array('modulename'=>'videoboard', 'instance'=>$videoboard->id))) {
+        if ($event->id = $DB->get_field('event', 'id', array('modulename' => 'videoboard', 'instance' => $videoboard->id))) {
             update_event($event);
 
         } else {
-            $event->courseid    = $videoboard->course;
-            $event->groupid     = 0;
-            $event->userid      = 0;
-            $event->modulename  = 'videoboard';
-            $event->instance    = $videoboard->id;
-            $event->eventtype   = 'due';
+            $event->courseid = $videoboard->course;
+            $event->groupid = 0;
+            $event->userid = 0;
+            $event->modulename = 'videoboard';
+            $event->instance = $videoboard->id;
+            $event->eventtype = 'due';
             $event->timeduration = 0;
-            $event->visible     = $DB->get_field('course_modules', 'visible', array('module'=>$moduleid, 'instance'=>$videoboard->id));
+            $event->visible = $DB->get_field('course_modules', 'visible', array('module' => $moduleid, 'instance' => $videoboard->id));
             add_event($event);
         }
 
@@ -4027,7 +4142,8 @@ function videoboard_refresh_events($courseid = 0) {
  *
  * This is used by the recent activity block
  */
-function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
+function videoboard_print_recent_activity($course, $viewfullnames, $timestart)
+{
     global $CFG, $USER, $DB, $OUTPUT;
 
     // do not use log table if possible, it may be huge
@@ -4042,15 +4158,17 @@ function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
                                                WHERE asb.timemodified > ? AND
                                                      a.course = ? AND
                                                      md.name = 'videoboard'
-                                            ORDER BY asb.timemodified ASC", array($timestart, $course->id))) {
-         return false;
+                                            ORDER BY asb.timemodified ASC", array($timestart, $course->id))
+    ) {
+        return false;
     }
 
-    $modinfo =& get_fast_modinfo($course); // reference needed because we might load the groups
-    $show    = array();
-    $grader  = array();
+    $modinfo = get_fast_modinfo($course); // reference needed because we might load the groups
 
-    foreach($submissions as $submission) {
+    $show = array();
+    $grader = array();
+
+    foreach ($submissions as $submission) {
         if (!array_key_exists($submission->cmid, $modinfo->cms)) {
             continue;
         }
@@ -4066,7 +4184,7 @@ function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
         // the act of sumbitting of videoboard may be considered private - only graders will see it if specified
         if (empty($CFG->videoboard_showrecentsubmissions)) {
             if (!array_key_exists($cm->id, $grader)) {
-                $grader[$cm->id] = has_capability('moodle/grade:viewall', get_context_instance(CONTEXT_MODULE, $cm->id));
+                $grader[$cm->id] = has_capability('moodle/grade:viewall', context_module::instance($cm->id));
             }
             if (!$grader[$cm->id]) {
                 continue;
@@ -4075,7 +4193,7 @@ function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
 
         $groupmode = groups_get_activity_groupmode($cm, $course);
 
-        if ($groupmode == SEPARATEGROUPS and !has_capability('moodle/site:accessallgroups', get_context_instance(CONTEXT_MODULE, $cm->id))) {
+        if ($groupmode == SEPARATEGROUPS and !has_capability('moodle/site:accessallgroups', context_module::instance($cm->id))) {
             if (isguestuser()) {
                 // shortcut - guest user does not belong into any group
                 continue;
@@ -4089,7 +4207,7 @@ function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
             if (empty($modinfo->groups[$cm->id])) {
                 continue;
             }
-            $usersgroups =  groups_get_all_groups($course->id, $submission->userid, $cm->groupingid);
+            $usersgroups = groups_get_all_groups($course->id, $submission->userid, $cm->groupingid);
             if (is_array($usersgroups)) {
                 $usersgroups = array_keys($usersgroups);
                 $intersect = array_intersect($usersgroups, $modinfo->groups[$cm->id]);
@@ -4105,12 +4223,12 @@ function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
         return false;
     }
 
-    echo $OUTPUT->heading(get_string('newsubmissions', 'videoboard').':', 3);
+    echo $OUTPUT->heading(get_string('newsubmissions', 'videoboard') . ':', 3);
 
     foreach ($show as $submission) {
         $cm = $modinfo->cms[$submission->cmid];
-        $link = $CFG->wwwroot.'/mod/videoboard/view.php?id='.$cm->id;
-        print_recent_activity_note($submission->timemodified, $submission, $cm->name, $link, false, $viewfullnames);
+        $link = $CFG->wwwroot . '/mod/videoboard/view.php?id=' . $cm->id;
+        print_recent_activity_note($submission->timemodified, $submission, $cm->name, $link, false, $viewfullnames); //??
     }
 
     return true;
@@ -4120,13 +4238,14 @@ function videoboard_print_recent_activity($course, $viewfullnames, $timestart) {
 /**
  * Returns all videoboards since a given time in specified forum.
  */
-function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $courseid, $cmid, $userid=0, $groupid=0)  {
+function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $courseid, $cmid, $userid = 0, $groupid = 0)
+{
     global $CFG, $COURSE, $USER, $DB;
 
     if ($COURSE->id == $courseid) {
         $course = $COURSE;
     } else {
-        $course = $DB->get_record('course', array('id'=>$courseid));
+        $course = $DB->get_record('course', array('id' => $courseid));
     }
 
     $modinfo =& get_fast_modinfo($course);
@@ -4143,11 +4262,11 @@ function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $
 
     if ($groupid) {
         $groupselect = "AND gm.groupid = :groupid";
-        $groupjoin   = "JOIN {groups_members} gm ON  gm.userid=u.id";
+        $groupjoin = "JOIN {groups_members} gm ON  gm.userid=u.id";
         $params['groupid'] = $groupid;
     } else {
         $groupselect = "";
-        $groupjoin   = "";
+        $groupjoin = "";
     }
 
     $params['cminstance'] = $cm->instance;
@@ -4163,15 +4282,16 @@ function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $
                                           $groupjoin
                                                WHERE asb.timemodified > :timestart AND a.id = :cminstance
                                                      $userselect $groupselect
-                                            ORDER BY asb.timemodified ASC", $params)) {
-         return;
+                                            ORDER BY asb.timemodified ASC", $params)
+    ) {
+        return;
     }
 
-    $groupmode       = groups_get_activity_groupmode($cm, $course);
-    $cm_context      = get_context_instance(CONTEXT_MODULE, $cm->id);
-    $grader          = has_capability('moodle/grade:viewall', $cm_context);
+    $groupmode = groups_get_activity_groupmode($cm, $course);
+    $cm_context = context_module::instance($cm->id);
+    $grader = has_capability('moodle/grade:viewall', $cm_context);
     $accessallgroups = has_capability('moodle/site:accessallgroups', $cm_context);
-    $viewfullnames   = has_capability('moodle/site:viewfullnames', $cm_context);
+    $viewfullnames = has_capability('moodle/site:viewfullnames', $cm_context);
 
     if (is_null($modinfo->groups)) {
         $modinfo->groups = groups_get_user_groups($course->id); // load all my groups and cache it in modinfo
@@ -4179,7 +4299,7 @@ function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $
 
     $show = array();
 
-    foreach($submissions as $submission) {
+    foreach ($submissions as $submission) {
         if ($submission->userid == $USER->id) {
             $show[] = $submission;
             continue;
@@ -4218,24 +4338,24 @@ function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $
     }
 
     if ($grader) {
-        require_once($CFG->libdir.'/gradelib.php');
+        require_once($CFG->libdir . '/gradelib.php');
         $userids = array();
-        foreach ($show as $id=>$submission) {
+        foreach ($show as $id => $submission) {
             $userids[] = $submission->userid;
 
         }
         $grades = grade_get_grades($courseid, 'mod', 'videoboard', $cm->instance, $userids);
     }
 
-    $aname = format_string($cm->name,true);
+    $aname = format_string($cm->name, true);
     foreach ($show as $submission) {
         $tmpactivity = new stdClass();
 
-        $tmpactivity->type         = 'videoboard';
-        $tmpactivity->cmid         = $cm->id;
-        $tmpactivity->name         = $aname;
-        $tmpactivity->sectionnum   = $cm->sectionnum;
-        $tmpactivity->timestamp    = $submission->timemodified;
+        $tmpactivity->type = 'videoboard';
+        $tmpactivity->cmid = $cm->id;
+        $tmpactivity->name = $aname;
+        $tmpactivity->sectionnum = $cm->sectionnum;
+        $tmpactivity->timestamp = $submission->timemodified;
 
         if ($grader) {
             $tmpactivity->grade = $grades->items[0]->grades[$submission->userid]->str_long_grade;
@@ -4262,7 +4382,8 @@ function videoboard_get_recent_mod_activity(&$activities, &$index, $timestart, $
  *
  * This is used by course/recent.php
  */
-function videoboard_print_recent_mod_activity($activity, $courseid, $detail, $modnames)  {
+function videoboard_print_recent_mod_activity($activity, $courseid, $detail, $modnames)
+{
     global $CFG, $OUTPUT;
 
     echo '<table border="0" cellpadding="3" cellspacing="0" class="videoboard-recent">';
@@ -4274,44 +4395,46 @@ function videoboard_print_recent_mod_activity($activity, $courseid, $detail, $mo
     if ($detail) {
         $modname = $modnames[$activity->type];
         echo '<div class="title">';
-        echo "<img src=\"" . $OUTPUT->pix_url('icon', 'videoboard') . "\" ".
-             "class=\"icon\" alt=\"$modname\">";
+        echo "<img src=\"" . $OUTPUT->pix_url('icon', 'videoboard') . "\" " .
+            "class=\"icon\" alt=\"$modname\">";
         echo "<a href=\"$CFG->wwwroot/mod/videoboard/view.php?id={$activity->cmid}\">{$activity->name}</a>";
         echo '</div>';
     }
 
     if (isset($activity->grade)) {
         echo '<div class="grade">';
-        echo get_string('grade').': ';
+        echo get_string('grade') . ': ';
         echo $activity->grade;
         echo '</div>';
     }
 
     echo '<div class="user">';
     echo "<a href=\"$CFG->wwwroot/user/view.php?id={$activity->user->id}&amp;course=$courseid\">"
-         ."{$activity->user->fullname}</a>  - ".userdate($activity->timestamp);
+        . "{$activity->user->fullname}</a>  - " . userdate($activity->timestamp);
     echo '</div>';
 
     echo "</td></tr></table>";
 }
 
 
-function videoboard_display_lateness($timesubmitted, $timedue) {
+function videoboard_display_lateness($timesubmitted, $timedue)
+{
     if (!$timedue) {
         return '';
     }
     $time = $timedue - $timesubmitted;
     if ($time < 0) {
         $timetext = get_string('late', 'videoboard', format_time($time));
-        return ' (<span class="late">'.$timetext.'</span>)';
+        return ' (<span class="late">' . $timetext . '</span>)';
     } else {
         $timetext = get_string('early', 'videoboard', format_time($time));
-        return ' (<span class="early">'.$timetext.'</span>)';
+        return ' (<span class="early">' . $timetext . '</span>)';
     }
 }
 
 
-function videoboard_get_all_submissions($videoboard, $sort="", $dir="DESC") {
+function videoboard_get_all_submissions($videoboard, $sort = "", $dir = "DESC")
+{
 /// Return all videoboard submissions by ENROLLED students (even empty)
     global $CFG, $DB;
 
@@ -4338,20 +4461,22 @@ function videoboard_get_all_submissions($videoboard, $sort="", $dir="DESC") {
 }
 
 
-function videoboard_pack_files($filesforzipping) {
-        global $CFG;
-        //create path for new zip file.
-        $tempzip = tempnam($CFG->tempdir.'/', 'videoboard_');
-        //zip files
-        $zipper = new zip_packer();
-        if ($zipper->archive_to_pathname($filesforzipping, $tempzip)) {
-            return $tempzip;
-        }
-        return false;
+function videoboard_pack_files($filesforzipping)
+{
+    global $CFG;
+    //create path for new zip file.
+    $tempzip = tempnam($CFG->tempdir . '/', 'videoboard_');
+    //zip files
+    $zipper = new zip_packer();
+    if ($zipper->archive_to_pathname($filesforzipping, $tempzip)) {
+        return $tempzip;
+    }
+    return false;
 }
 
 
-function videoboard_view_dates() {
+function videoboard_view_dates()
+{
     global $OUTPUT, $videoboard;
     if (!$videoboard->timeavailable && !$videoboard->timedue) {
         return;
@@ -4360,73 +4485,74 @@ function videoboard_view_dates() {
     echo $OUTPUT->box_start('generalbox boxaligncenter', 'dates');
     echo '<table>';
     if ($videoboard->timeavailable) {
-        echo '<tr><td class="c0">'.get_string('availabledate','videoboard').':</td>';
-        echo '    <td class="c1">'.userdate($videoboard->timeavailable).'</td></tr>';
+        echo '<tr><td class="c0">' . get_string('availabledate', 'videoboard') . ':</td>';
+        echo '    <td class="c1">' . userdate($videoboard->timeavailable) . '</td></tr>';
     }
     if ($videoboard->timedue) {
-        echo '<tr><td class="c0">'.get_string('duedate','videoboard').':</td>';
-        echo '    <td class="c1">'.userdate($videoboard->timedue).'</td></tr>';
+        echo '<tr><td class="c0">' . get_string('duedate', 'videoboard') . ':</td>';
+        echo '    <td class="c1">' . userdate($videoboard->timedue) . '</td></tr>';
     }
     echo '</table>';
     echo $OUTPUT->box_end();
 }
 
 
-function videoboard_player_video($link, $mime = 'video/mp4', $poster = null, $ids = 0){
+function videoboard_player_video($link, $mime = 'video/mp4', $poster = null, $ids = 0)
+{
     global $OUTPUT, $videoboard, $CFG;
-    
+
     $swfflashmediaelement = new moodle_url('/mod/videoboard/swf/flashmediaelement.swf');
-    $flowplayer    = new moodle_url("/mod/videoboard/js/flowplayer-3.2.7.swf");
-    
+    $flowplayer = new moodle_url("/mod/videoboard/js/flowplayer-3.2.7.swf");
+
     if ($mime != 'video/mp4') {
         $mime = 'video/mp4';
-        
-        $player_html5  = '<video width="269" height="198" id="videoboard-player-'.$ids.'" src="'.$link.'" type="'.$mime.'" controls="controls"></video>';
-        
-        $player_html5_videojs = '<video id="videoboard-player-'.$ids.'" class="video-js vjs-default-skin" controls preload="auto" width="269" height="198" data-setup=\'{"example_option":true}\'> <source src="'.$link.'" type="'.$mime.'" /> </video>';
-        
-        $player_flash  = html_writer::script('var fn = function() {var att = { data:"'.$swfflashmediaelement.'", width:"269", height:"198" };var par = { flashvars:"controls=true&file='.$link.'" };var id = "videoboard-player-'.$ids.'";var myObject = swfobject.createSWF(att, par, id);};swfobject.addDomLoadEvent(fn);');
-        $player_flash .= '<div id="videoboard-player-'.$ids.'"><a href="'.$link.'">audio</a></div>';
-        
+
+        $player_html5 = '<video width="269" height="198" id="videoboard-player-' . $ids . '" src="' . $link . '" type="' . $mime . '" controls="controls"></video>';
+
+        $player_html5_videojs = '<video id="videoboard-player-' . $ids . '" class="video-js vjs-default-skin" controls preload="auto" width="269" height="198" data-setup=\'{"example_option":true}\'> <source src="' . $link . '" type="' . $mime . '" /> </video>';
+
+        $player_flash = html_writer::script('var fn = function() {var att = { data:"' . $swfflashmediaelement . '", width:"269", height:"198" };var par = { flashvars:"controls=true&file=' . $link . '" };var id = "videoboard-player-' . $ids . '";var myObject = swfobject.createSWF(att, par, id);};swfobject.addDomLoadEvent(fn);');
+        $player_flash .= '<div id="videoboard-player-' . $ids . '"><a href="' . $link . '">audio</a></div>';
+
         $browser = videoboard_get_browser();
-        
+
         if (videoboard_is_ios()) {
             return $player_html5;
-        } else if ($browser == 'firefox'){
+        } else if ($browser == 'firefox') {
             return $player_html5_videojs;
-        } else if ($browser == 'msie'){
+        } else if ($browser == 'msie') {
             return $player_flash;
-        } else if ($browser == 'chrome'){
+        } else if ($browser == 'chrome') {
             return $player_html5_videojs;
         } else {
             return $player_html5;
         }
     } else {
-        $player_flowplayer  = "";
-        $player_flowplayer .= html_writer::start_tag('a', array("id" => "videoboard-player-{$ids}", "style" => "display:block;width:269px;height:198px;background: url('".$poster."') no-repeat 0 0;", "href" => $link));
+        $player_flowplayer = "";
+        $player_flowplayer .= html_writer::start_tag('a', array("id" => "videoboard-player-{$ids}", "style" => "display:block;width:269px;height:198px;background: url('" . $poster . "') no-repeat 0 0;", "href" => $link));
         $player_flowplayer .= html_writer::empty_tag('img', array("src" => new moodle_url("/mod/videoboard/img/playlayer.png"), "alt" => get_string("video", "videoboard"), "width" => 269, "height" => 198));
         $player_flowplayer .= html_writer::end_tag('a');
-        $player_flowplayer .= html_writer::script('flowplayer("videoboard-player-'.$ids.'", "'.$flowplayer.'");');
-        
-        $player_flash  = html_writer::script('var fn = function() {var att = { data:"'.$swfflashmediaelement.'", width:"269", height:"198" };var par = { flashvars:"controls=true&file='.urlencode($link).'&poster='.urlencode($poster).'" };var id = "videoboard-player-'.$ids.'";var myObject = swfobject.createSWF(att, par, id);};swfobject.addDomLoadEvent(fn);');
-        $player_flash .= '<div id="videoboard-player-'.$ids.'"><a href="'.$link.'">video</a></div>';
-        
-        if (!empty($poster)) $poster = 'poster="'.$poster.'"';
+        $player_flowplayer .= html_writer::script('flowplayer("videoboard-player-' . $ids . '", "' . $flowplayer . '");');
 
-        $player_html5 = '<video width="269" height="198" id="videoboard-player-'.$ids.'" src="'.$link.'" type="'.$mime.'" controls="controls" '.$poster.'></video>';
-        $player_html5_mediaelementplayer = '<video width="269" height="198" id="videoboard-player-'.$ids.'" src="'.$link.'" type="'.$mime.'" class="mediaelementplayer" controls="controls" '.$poster.'></video>';
-        
-        $player_html5_videojs = '<video id="videoboard-player-'.$ids.'" controls class="video-js vjs-default-skin" data-setup=\'{"example_option":true}\' preload="auto" width="269" height="198" '.$poster.'> <source src="'.$link.'" type="'.$mime.'" /> </video>';
-        
+        $player_flash = html_writer::script('var fn = function() {var att = { data:"' . $swfflashmediaelement . '", width:"269", height:"198" };var par = { flashvars:"controls=true&file=' . urlencode($link) . '&poster=' . urlencode($poster) . '" };var id = "videoboard-player-' . $ids . '";var myObject = swfobject.createSWF(att, par, id);};swfobject.addDomLoadEvent(fn);');
+        $player_flash .= '<div id="videoboard-player-' . $ids . '"><a href="' . $link . '">video</a></div>';
+
+        if (!empty($poster)) $poster = 'poster="' . $poster . '"';
+
+        $player_html5 = '<video width="269" height="198" id="videoboard-player-' . $ids . '" src="' . $link . '" type="' . $mime . '" controls="controls" ' . $poster . '></video>';
+        $player_html5_mediaelementplayer = '<video width="269" height="198" id="videoboard-player-' . $ids . '" src="' . $link . '" type="' . $mime . '" class="mediaelementplayer" controls="controls" ' . $poster . '></video>';
+
+        $player_html5_videojs = '<video id="videoboard-player-' . $ids . '" controls class="video-js vjs-default-skin" data-setup=\'{"example_option":true}\' preload="auto" width="269" height="198" ' . $poster . '> <source src="' . $link . '" type="' . $mime . '" /> </video>';
+
         $browser = videoboard_get_browser();
-        
+
         if (videoboard_is_ios()) {
             return $player_html5;
-        } else if ($browser == 'firefox'){
+        } else if ($browser == 'firefox') {
             return $player_flash;
-        } else if ($browser == 'msie'){
+        } else if ($browser == 'msie') {
             return $player_html5_mediaelementplayer;
-        } else if ($browser == 'chrome'){
+        } else if ($browser == 'chrome') {
             return $player_html5_mediaelementplayer;
         } else {
             return $player_html5;
@@ -4435,31 +4561,32 @@ function videoboard_player_video($link, $mime = 'video/mp4', $poster = null, $id
 }
 
 
-function videoboard_player_mp3($link, $mime = 'audio/mp3', $ids = 0){
+function videoboard_player_mp3($link, $mime = 'audio/mp3', $ids = 0)
+{
     global $OUTPUT, $videoboard, $CFG;
-        
-    $player_html5  = "";
-    $player_html5 .= html_writer::start_tag('div', array("id" => "html5-player-".$ids));
-    $player_html5 .= html_writer::start_tag('audio', array("id" => "html5-audioplayer-".$ids, "controls" => "controls", "src" => $link));
+
+    $player_html5 = "";
+    $player_html5 .= html_writer::start_tag('div', array("id" => "html5-player-" . $ids));
+    $player_html5 .= html_writer::start_tag('audio', array("id" => "html5-audioplayer-" . $ids, "controls" => "controls", "src" => $link));
     $player_html5 .= html_writer::link($link, get_string("audio", "videoboard"));
     $player_html5 .= html_writer::end_tag('audio');
     $player_html5 .= html_writer::end_tag('div');
-        
-        
-    $player_flash  = "";
-    $player_flash .= html_writer::script('var fn = function() {var att = { data:"'.(new moodle_url("/mod/videoboard/js/mp3player.swf")).'", width:"90", height:"15" };var par = { flashvars:"src='.$link.'" };var id = "videoboard-player-'.$ids.'";var myObject = swfobject.createSWF(att, par, id);};swfobject.addDomLoadEvent(fn);');
-    $player_flash .= '<div id="videoboard-player-'.$ids.'"><a href="'.$link.'">audio</a></div>';
-                
-        
+
+
+    $player_flash = "";
+    $player_flash .= html_writer::script('var fn = function() {var att = { data:"' . (new moodle_url("/mod/videoboard/js/mp3player.swf")) . '", width:"90", height:"15" };var par = { flashvars:"src=' . $link . '" };var id = "videoboard-player-' . $ids . '";var myObject = swfobject.createSWF(att, par, id);};swfobject.addDomLoadEvent(fn);');
+    $player_flash .= '<div id="videoboard-player-' . $ids . '"><a href="' . $link . '">audio</a></div>';
+
+
     $browser = videoboard_get_browser();
-        
+
     if (videoboard_is_ios()) {
         return $player_html5;
-    } else if ($browser == 'firefox'){
+    } else if ($browser == 'firefox') {
         return $player_flash;
-    } else if ($browser == 'msie'){
+    } else if ($browser == 'msie') {
         return $player_flash;
-    } else if ($browser == 'chrome'){
+    } else if ($browser == 'chrome') {
         return $player_flash;
     } else {
         return $player_html5;
@@ -4467,31 +4594,30 @@ function videoboard_player_mp3($link, $mime = 'audio/mp3', $ids = 0){
 }
 
 
-function videoboard_player_youtube($embed, $ids){
-    return '<div id="videoboard-player-'.$ids.'" style="cursor: pointer;">
-<img src="http://i.ytimg.com/vi/'.$embed.'/0.jpg" class="videoboard-youtube-poster" data-url="'.$ids.'" data-text="'.$embed.'" style="width: 269px; height:198px" />
+function videoboard_player_youtube($embed, $ids)
+{
+    return '<div id="videoboard-player-' . $ids . '" style="cursor: pointer;">
+<img src="http://i.ytimg.com/vi/' . $embed . '/0.jpg" class="videoboard-youtube-poster" data-url="' . $ids . '" data-text="' . $embed . '" style="width: 269px; height:198px" />
 </div>
 ';
 }
 
 
-function videoboard_get_browser(){
-    if(strpos($_SERVER['HTTP_USER_AGENT'], 'Android') !== FALSE) 
+function videoboard_get_browser()
+{
+    if (strpos($_SERVER['HTTP_USER_AGENT'], 'Android') !== FALSE)
         return 'android';
-    //elseif(strpos($_SERVER['HTTP_USER_AGENT'], 'MSIE') !== FALSE) 
-    elseif(preg_match('~MSIE|Internet Explorer~i', $_SERVER['HTTP_USER_AGENT']) || (strpos($_SERVER['HTTP_USER_AGENT'], 'Trident/7.0; rv:11.0') !== false))
+    //elseif(strpos($_SERVER['HTTP_USER_AGENT'], 'MSIE') !== FALSE)
+    elseif (preg_match('~MSIE|Internet Explorer~i', $_SERVER['HTTP_USER_AGENT']) || (strpos($_SERVER['HTTP_USER_AGENT'], 'Trident/7.0; rv:11.0') !== false))
         return 'msie';
-    elseif(strpos($_SERVER['HTTP_USER_AGENT'], 'Firefox') !== FALSE) 
+    elseif (strpos($_SERVER['HTTP_USER_AGENT'], 'Firefox') !== FALSE)
         return 'firefox';
-    elseif(strpos($_SERVER['HTTP_USER_AGENT'], 'Chrome') !== FALSE) 
+    elseif (strpos($_SERVER['HTTP_USER_AGENT'], 'Chrome') !== FALSE)
         return 'chrome';
-    elseif(strpos($_SERVER['HTTP_USER_AGENT'], 'iPhone') !== FALSE || strpos($_SERVER['HTTP_USER_AGENT'], 'iPad') !== FALSE) 
+    elseif (strpos($_SERVER['HTTP_USER_AGENT'], 'iPhone') !== FALSE || strpos($_SERVER['HTTP_USER_AGENT'], 'iPad') !== FALSE)
         return 'mobileios';
-    elseif(strpos($_SERVER['HTTP_USER_AGENT'], 'Safari') !== FALSE) 
+    elseif (strpos($_SERVER['HTTP_USER_AGENT'], 'Safari') !== FALSE)
         return 'safari';
-    else 
+    else
         return 'other';
 }
-
-
-
